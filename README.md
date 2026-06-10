@@ -9,6 +9,18 @@ React Native / Expo project.
 
 LearnStreak is a React Native app built with Expo and Expo Router. It is configured for Android, iOS and web. The Expo package id is `com.nickruti.learnstreak1` (see `app.json`).
 
+## Why LearnStreak?
+
+LearnStreak helps you turn learning into a daily habit. It encourages consistency with visual streak tracking, progress summaries, and achievement badges so that small, regular effort turns into measurable progress. Key benefits:
+
+- Build routine: simple streak tracking and reminders keep you focused on the next small step.
+- Stay motivated: earn badges and view streak history to celebrate wins and maintain momentum.
+- Track progress: quick summaries and history views show how your learning compounds over time.
+- Lightweight & private: runs locally on your device, stores data locally, and offers a quick APK for users who want to try the app without installing from a store.
+- Cross-platform: built with Expo to run on Android, iOS, and web during development.
+
+Try the APK in this repo for a fast, hands-on demo (see the "Installing the APK" section below).
+
 ## Table of contents
 
 - Installation
