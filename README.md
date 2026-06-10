@@ -1,4 +1,4 @@
-# LearnStreak
+# LearnStreak 🔥
 <img width="307" height="527" alt="image" src="https://github.com/user-attachments/assets/8594279f-0165-4268-b471-5cbb89c9acbf" /><img width="307" height="527" alt="image" src="https://github.com/user-attachments/assets/9f5929c6-3238-4934-aadd-8b0362e037e3" /> <img width="307" height="527" alt="image" src="https://github.com/user-attachments/assets/979f7fca-2724-48b6-a998-c344e11da58c" />
 
 
