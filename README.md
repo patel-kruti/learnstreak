@@ -100,9 +100,80 @@ adb install -r path/to/your-app.apk
 
 If you don't use `adb`, you can also transfer the APK to the device and open it using a file manager (enable Install from Unknown Sources).
 
-Note about `rcan install`:
+### Downloadable APK (host and link)
 
-You mentioned an `.apk` that uses `rcan install`. I don't recognize `rcan` as a standard Android install tool — did you mean `adb install` or a custom/shell script named `rcan`? If `rcan` is a project-specific installer or a CI helper, tell me how it’s invoked and I will add exact instructions.
+You can provide the APK to users in one of the following ways. Replace `YOUR_USERNAME` and `v1.0.0` with your GitHub username and release tag.
+
+- GitHub Releases (recommended):
+
+	1. Create a release on GitHub and attach the APK (web UI or `gh`):
+
+```powershell
+gh release create v1.0.0 apk/learnstreak.apk --title "v1.0.0" --notes "Initial Android APK"
+```
+
+	2. Users download from:
+
+```
+https://github.com/YOUR_USERNAME/learnstreak/releases/download/v1.0.0/learnstreak.apk
+```
+
+- Raw file in the repo (not ideal for large files):
+
+	1. Add the APK to the repo under an `apk/` folder and push:
+
+```bash
+mkdir -p apk
+# copy your APK into apk/learnstreak.apk
+git add apk/learnstreak.apk
+git commit -m "Add APK for direct download"
+git push origin main
+```
+
+	2. Users download the raw file:
+
+```
+https://github.com/YOUR_USERNAME/learnstreak/raw/main/apk/learnstreak.apk
+```
+
+### Direct APK included in this repository
+
+This repository includes the APK in the `apk/` folder as `learnstreak.apk`. Users can download and install it directly from the repository raw URL (replace `YOUR_USERNAME` with the repository owner):
+
+```
+https://github.com/YOUR_USERNAME/learnstreak/raw/main/apk/learnstreak.apk
+```
+
+Install after download with ADB:
+
+```bash
+adb install learnstreak.apk
+```
+
+This APK is tracked using Git LFS. If you clone the repository, ensure Git LFS is installed so the APK downloads correctly:
+
+```bash
+git lfs install
+git clone https://github.com/YOUR_USERNAME/learnstreak.git
+```
+
+### Security and checksum
+
+Provide a SHA256 checksum alongside the APK so users can verify integrity:
+
+```bash
+sha256sum apk/learnstreak.apk > apk/learnstreak.apk.sha256
+```
+
+Users can verify after download:
+
+```bash
+sha256sum -c learnstreak.apk.sha256
+```
+
+### Note about `rcan install`
+
+You previously mentioned `rcan install`. I don't recognize `rcan` as a standard Android install tool — if you mean `adb install`, the commands above are correct. If `rcan` is a custom utility or script you use, tell me how `rcan` is invoked (shell command or script) and I will add exact instructions for that method.
 
 ## Project structure
 
