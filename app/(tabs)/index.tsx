@@ -1,5 +1,5 @@
 import { useFocusEffect } from 'expo-router';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -19,10 +19,12 @@ import { commitEntryToGitHub } from '../../src/utils/github';
 import { scheduleStreakCelebration } from '../../src/utils/notifications';
 import {
   checkAndAwardBadges,
+  clearPendingEdit,
   deleteEntry,
   formatMinutes,
   generateId,
   getEntriesForDate,
+  getPendingEdit,
   getTodayDate,
   saveEntry,
   updateStreak,
@@ -38,26 +40,63 @@ function xAlert(title: string, message?: string) {
 
 export default function AddScreen() {
   const today = getTodayDate();
+  const scrollRef = useRef<ScrollView>(null);
 
+  // ── Form state ──────────────────────────────────────────────────────────────
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
   const [title, setTitle]             = useState('');
   const [description, setDescription] = useState('');
   const [duration, setDuration]       = useState('');
   const [saving, setSaving]           = useState(false);
+
+  // editingEntry: null = adding new, non-null = editing existing
+  const [editingEntry, setEditingEntry] = useState<LearningEntry | null>(null);
+
+  // ── Session list ────────────────────────────────────────────────────────────
   const [todaySessions, setTodaySessions] = useState<LearningEntry[]>([]);
 
-  useFocusEffect(useCallback(() => { loadTodaySessions(); }, []));
+  useFocusEffect(useCallback(() => {
+    loadTodaySessions();
+    checkPendingEdit();
+  }, []));
+
+  async function checkPendingEdit() {
+    const pending = await getPendingEdit();
+    if (!pending) return;
+    await clearPendingEdit();
+    // Pre-fill form with the session from History tab
+    setEditingEntry(pending);
+    setSelectedCategory(pending.category);
+    setTitle(pending.title);
+    setDescription(pending.description);
+    setDuration(String(pending.duration));
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }
 
   async function loadTodaySessions() {
     const entries = await getEntriesForDate(today);
     setTodaySessions([...entries].sort((a, b) => a.createdAt - b.createdAt));
   }
 
+  // ── Form helpers ────────────────────────────────────────────────────────────
+
   function resetForm() {
     setSelectedCategory(null);
     setTitle('');
     setDescription('');
     setDuration('');
+    setEditingEntry(null);
+  }
+
+  // Load a session into the form for editing, then scroll to top
+  function startEditing(entry: LearningEntry) {
+    setEditingEntry(entry);
+    setSelectedCategory(entry.category);
+    setTitle(entry.title);
+    setDescription(entry.description);
+    setDuration(String(entry.duration));
+    // Scroll to top so the user sees the form
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
   }
 
   function validate(): string | null {
@@ -68,37 +107,61 @@ export default function AddScreen() {
     return null;
   }
 
+  // ── Save / Update ───────────────────────────────────────────────────────────
+
   async function handleSave() {
     const err = validate();
     if (err) { xAlert('Missing info', err); return; }
 
     setSaving(true);
     try {
-      const isFirstEntryToday = todaySessions.length === 0;
-      const entry: LearningEntry = {
-        id: generateId(), date: today,
-        category: selectedCategory!, title: title.trim(),
-        description: description.trim(), duration: parseInt(duration),
-        createdAt: Date.now(),
-      };
+      if (editingEntry) {
+        // ── UPDATE existing entry ──────────────────────────────────────────
+        // Preserve id, date, createdAt — only overwrite the user-editable fields
+        const updated: LearningEntry = {
+          ...editingEntry,
+          category:    selectedCategory!,
+          title:       title.trim(),
+          description: description.trim(),
+          duration:    parseInt(duration),
+        };
+        await saveEntry(updated);
+        commitEntryToGitHub(updated).catch(() => {});
+        xAlert('✅ Session updated', `"${updated.title}" saved.`);
+        resetForm();
+        await loadTodaySessions();
 
-      await saveEntry(entry);
-
-      if (isFirstEntryToday) {
-        const newStreak = await updateStreak(today);
-        const newBadges = await checkAndAwardBadges(newStreak);
-        if (newBadges.length > 0) await scheduleStreakCelebration(newStreak.currentStreak);
-        const streakMsg = newStreak.currentStreak > 1
-          ? `\n🔥 ${newStreak.currentStreak}-day streak!` : '\n🌱 Streak started!';
-        xAlert('🎉 Session logged!',
-          `Great work!${streakMsg}${newBadges.length > 0 ? '\n🏆 New badge earned!' : ''}`);
       } else {
-        xAlert('✅ Session added', `+${duration}m of ${getCategoryLabel(selectedCategory!)} logged.`);
-      }
+        // ── ADD new entry ──────────────────────────────────────────────────
+        const isFirstEntryToday = todaySessions.length === 0;
+        const entry: LearningEntry = {
+          id:          generateId(),
+          date:        today,
+          category:    selectedCategory!,
+          title:       title.trim(),
+          description: description.trim(),
+          duration:    parseInt(duration),
+          createdAt:   Date.now(),
+        };
 
-      commitEntryToGitHub(entry).catch(() => {});
-      resetForm();
-      await loadTodaySessions();
+        await saveEntry(entry);
+
+        if (isFirstEntryToday) {
+          const newStreak = await updateStreak(today);
+          const newBadges = await checkAndAwardBadges(newStreak);
+          if (newBadges.length > 0) await scheduleStreakCelebration(newStreak.currentStreak);
+          const streakMsg = newStreak.currentStreak > 1
+            ? `\n🔥 ${newStreak.currentStreak}-day streak!` : '\n🌱 Streak started!';
+          xAlert('🎉 Session logged!',
+            `Great work!${streakMsg}${newBadges.length > 0 ? '\n🏆 New badge earned!' : ''}`);
+        } else {
+          xAlert('✅ Session added', `+${duration}m of ${getCategoryLabel(selectedCategory!)} logged.`);
+        }
+
+        commitEntryToGitHub(entry).catch(() => {});
+        resetForm();
+        await loadTodaySessions();
+      }
     } catch {
       xAlert('Error', 'Something went wrong. Please try again.');
     } finally {
@@ -106,7 +169,12 @@ export default function AddScreen() {
     }
   }
 
+  // ── Delete ──────────────────────────────────────────────────────────────────
+
   async function handleDelete(entry: LearningEntry) {
+    // If we're currently editing this entry, cancel the edit first
+    if (editingEntry?.id === entry.id) resetForm();
+
     const confirmed = Platform.OS === 'web'
       ? window.confirm(`Remove "${entry.title}"?`)
       : await new Promise<boolean>((resolve) =>
@@ -121,25 +189,44 @@ export default function AddScreen() {
   }
 
   const totalTodayMinutes = todaySessions.reduce((sum, e) => sum + e.duration, 0);
+  const isEditing = editingEntry !== null;
 
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        ref={scrollRef}
+        style={styles.container}
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+      >
 
-        {/* Header */}
+        {/* ── Header ──────────────────────────────────────────────────────── */}
         <View style={styles.header}>
           <Text style={styles.dateLabel}>{formatDisplayDate(today)}</Text>
-          <Text style={styles.heading}>📚 Log a learning session</Text>
-          {todaySessions.length > 0 && (
+          <Text style={styles.heading}>
+            {isEditing ? '✏️ Edit session' : '📚 Log a learning session'}
+          </Text>
+          {todaySessions.length > 0 && !isEditing && (
             <View style={styles.todayBadge}>
               <Text style={styles.todayBadgeText}>
                 ✅ {todaySessions.length} session{todaySessions.length > 1 ? 's' : ''} · {formatMinutes(totalTodayMinutes)} today
               </Text>
             </View>
           )}
+          {/* Edit mode banner */}
+          {isEditing && (
+            <View style={styles.editBanner}>
+              <Text style={styles.editBannerText}>
+                Editing: {editingEntry!.title}
+              </Text>
+              <TouchableOpacity onPress={resetForm}>
+                <Text style={styles.editBannerCancel}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
 
-        {/* Category */}
+        {/* ── Category ────────────────────────────────────────────────────── */}
         <Text style={styles.label}>Category <Text style={styles.required}>*</Text></Text>
         <View style={styles.categoryGrid}>
           {CATEGORIES.map((cat) => {
@@ -160,7 +247,7 @@ export default function AddScreen() {
           })}
         </View>
 
-        {/* Title — VoiceInput (has mic button) */}
+        {/* ── Title ───────────────────────────────────────────────────────── */}
         <Text style={styles.label}>What did you learn? <Text style={styles.required}>*</Text></Text>
         <VoiceInput
           value={title}
@@ -169,7 +256,7 @@ export default function AddScreen() {
           maxLength={100}
         />
 
-        {/* Notes — VoiceInput (has mic button) */}
+        {/* ── Notes ───────────────────────────────────────────────────────── */}
         <Text style={styles.label}>Notes <Text style={styles.optional}>(optional)</Text></Text>
         <VoiceInput
           value={description}
@@ -180,7 +267,7 @@ export default function AddScreen() {
           maxLength={2000}
         />
 
-        {/* Duration — chips + plain TextInput, NO mic button */}
+        {/* ── Duration ────────────────────────────────────────────────────── */}
         <Text style={styles.label}>Time spent (minutes) <Text style={styles.required}>*</Text></Text>
         <View style={styles.durationRow}>
           {[15, 30, 45, 60, 90].map((mins) => (
@@ -195,12 +282,6 @@ export default function AddScreen() {
             </TouchableOpacity>
           ))}
         </View>
-        {/*
-          Plain TextInput — no VoiceInput wrapper.
-          Reason: duration is a number field; voice input for numbers is unreliable
-          (speech engines return words like "forty five" not "45").
-          Chips cover the common cases; this input handles everything else.
-        */}
         <TextInput
           style={styles.durationInput}
           value={duration}
@@ -211,20 +292,26 @@ export default function AddScreen() {
           maxLength={4}
         />
 
-        {/* Save */}
+        {/* ── Save / Update button ─────────────────────────────────────────── */}
         <TouchableOpacity
-          style={[styles.saveButton, saving && styles.saveButtonDisabled]}
+          style={[
+            styles.saveButton,
+            isEditing && styles.saveButtonEdit,
+            saving && styles.saveButtonDisabled,
+          ]}
           onPress={handleSave}
           disabled={saving}
           activeOpacity={0.8}
         >
           {saving
             ? <ActivityIndicator color={COLORS.white} />
-            : <Text style={styles.saveButtonText}>+ Add Session</Text>
+            : <Text style={styles.saveButtonText}>
+                {isEditing ? '✓ Update Session' : '+ Add Session'}
+              </Text>
           }
         </TouchableOpacity>
 
-        {/* Today's sessions */}
+        {/* ── Today's sessions ────────────────────────────────────────────── */}
         {todaySessions.length > 0 && (
           <>
             <View style={styles.sessionsDivider}>
@@ -234,7 +321,13 @@ export default function AddScreen() {
             </View>
 
             {todaySessions.map((entry) => (
-              <SessionCard key={entry.id} entry={entry} onDelete={() => handleDelete(entry)} />
+              <SessionCard
+                key={entry.id}
+                entry={entry}
+                isBeingEdited={editingEntry?.id === entry.id}
+                onEdit={() => startEditing(entry)}
+                onDelete={() => handleDelete(entry)}
+              />
             ))}
 
             <View style={styles.totalRow}>
@@ -250,10 +343,22 @@ export default function AddScreen() {
   );
 }
 
-function SessionCard({ entry, onDelete }: { entry: LearningEntry; onDelete: () => void }) {
+// ── Session card ──────────────────────────────────────────────────────────────
+
+function SessionCard({
+  entry,
+  isBeingEdited,
+  onEdit,
+  onDelete,
+}: {
+  entry: LearningEntry;
+  isBeingEdited: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   const catDef = CATEGORIES.find((c) => c.id === entry.category);
   return (
-    <View style={styles.sessionCard}>
+    <View style={[styles.sessionCard, isBeingEdited && styles.sessionCardEditing]}>
       <View style={styles.sessionLeft}>
         <View style={styles.sessionCatChip}>
           <Text style={styles.sessionCatEmoji}>{catDef?.emoji}</Text>
@@ -264,15 +369,33 @@ function SessionCard({ entry, onDelete }: { entry: LearningEntry; onDelete: () =
           ? <Text style={styles.sessionDesc} numberOfLines={1}>{entry.description}</Text>
           : null}
       </View>
+
       <View style={styles.sessionRight}>
         <Text style={styles.sessionDuration}>{formatMinutes(entry.duration)}</Text>
-        <TouchableOpacity onPress={onDelete} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Text style={styles.sessionDelete}>✕</Text>
-        </TouchableOpacity>
+        <View style={styles.sessionActions}>
+          {/* Edit button */}
+          <TouchableOpacity
+            onPress={onEdit}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={[styles.actionBtn, isBeingEdited && styles.actionBtnActive]}
+          >
+            <Text style={styles.actionBtnIcon}>✏️</Text>
+          </TouchableOpacity>
+          {/* Delete button */}
+          <TouchableOpacity
+            onPress={onDelete}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={styles.actionBtn}
+          >
+            <Text style={styles.sessionDelete}>✕</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     </View>
   );
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatDisplayDate(date: string): string {
   return new Date(date + 'T12:00:00').toLocaleDateString('en-IN', {
@@ -284,43 +407,52 @@ function getCategoryLabel(cat: Category): string {
   return CATEGORIES.find((c) => c.id === cat)?.label ?? cat;
 }
 
+// ── Styles ────────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
   flex:      { flex: 1, backgroundColor: COLORS.white },
   container: { flex: 1, backgroundColor: COLORS.white },
   content:   { padding: SPACING.md },
 
-  header:       { marginBottom: SPACING.lg },
-  dateLabel:    { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginBottom: 4, fontWeight: FONTS.weights.medium },
-  heading:      { fontSize: FONTS.sizes.xl, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary, marginBottom: SPACING.sm },
-  todayBadge:   { alignSelf: 'flex-start', backgroundColor: COLORS.successLight, borderWidth: 1, borderColor: COLORS.success, borderRadius: RADIUS.full, paddingHorizontal: SPACING.md, paddingVertical: 4 },
+  header:         { marginBottom: SPACING.lg },
+  dateLabel:      { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginBottom: 4, fontWeight: FONTS.weights.medium },
+  heading:        { fontSize: FONTS.sizes.xl, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary, marginBottom: SPACING.sm },
+  todayBadge:     { alignSelf: 'flex-start', backgroundColor: COLORS.successLight, borderWidth: 1, borderColor: COLORS.success, borderRadius: RADIUS.full, paddingHorizontal: SPACING.md, paddingVertical: 4 },
   todayBadgeText: { fontSize: FONTS.sizes.sm, color: COLORS.success, fontWeight: FONTS.weights.medium },
+
+  // Edit mode banner
+  editBanner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: COLORS.accentLight, borderWidth: 1, borderColor: COLORS.accent,
+    borderRadius: RADIUS.md, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
+  },
+  editBannerText:   { fontSize: FONTS.sizes.sm, color: COLORS.accent, fontWeight: FONTS.weights.medium, flex: 1 },
+  editBannerCancel: { fontSize: FONTS.sizes.sm, color: COLORS.accent, fontWeight: FONTS.weights.bold, marginLeft: SPACING.sm },
 
   label:    { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textSecondary, marginBottom: SPACING.sm, marginTop: SPACING.md, textTransform: 'uppercase', letterSpacing: 0.5 },
   required: { color: COLORS.danger, fontWeight: FONTS.weights.bold },
   optional: { color: COLORS.textTertiary, fontWeight: '400', textTransform: 'none' },
 
-  categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm },
-  categoryChip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1.5, borderColor: COLORS.borderLight, borderRadius: RADIUS.full, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, backgroundColor: COLORS.white },
+  categoryGrid:         { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm },
+  categoryChip:         { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1.5, borderColor: COLORS.borderLight, borderRadius: RADIUS.full, paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm, backgroundColor: COLORS.white },
   categoryChipSelected: { borderColor: COLORS.black, backgroundColor: COLORS.black },
-  categoryEmoji: { fontSize: 16 },
-  categoryLabel: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.medium, color: COLORS.textSecondary },
-  categoryLabelSelected: { color: COLORS.white },
+  categoryEmoji:        { fontSize: 16 },
+  categoryLabel:        { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.medium, color: COLORS.textSecondary },
+  categoryLabelSelected:{ color: COLORS.white },
 
-  durationRow: { flexDirection: 'row', gap: SPACING.xs, flexWrap: 'wrap', marginBottom: SPACING.sm },
-  durationChip: { borderWidth: 1.5, borderColor: COLORS.borderLight, borderRadius: RADIUS.full, paddingHorizontal: SPACING.md, paddingVertical: 7 },
-  durationChipSelected: { borderColor: COLORS.black, backgroundColor: COLORS.black },
-  durationChipText: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.medium, color: COLORS.textSecondary },
-  durationChipTextSelected: { color: COLORS.white },
-
-  // Plain TextInput for custom duration — no mic button
+  durationRow:             { flexDirection: 'row', gap: SPACING.xs, flexWrap: 'wrap', marginBottom: SPACING.sm },
+  durationChip:            { borderWidth: 1.5, borderColor: COLORS.borderLight, borderRadius: RADIUS.full, paddingHorizontal: SPACING.md, paddingVertical: 7 },
+  durationChipSelected:    { borderColor: COLORS.black, backgroundColor: COLORS.black },
+  durationChipText:        { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.medium, color: COLORS.textSecondary },
+  durationChipTextSelected:{ color: COLORS.white },
   durationInput: {
-    borderWidth: 1.5, borderColor: COLORS.borderLight,
-    borderRadius: RADIUS.md, padding: SPACING.md,
-    fontSize: FONTS.sizes.md, color: COLORS.textPrimary,
+    borderWidth: 1.5, borderColor: COLORS.borderLight, borderRadius: RADIUS.md,
+    padding: SPACING.md, fontSize: FONTS.sizes.md, color: COLORS.textPrimary,
     backgroundColor: COLORS.white,
   },
 
   saveButton:         { backgroundColor: COLORS.black, borderRadius: RADIUS.md, padding: SPACING.md, alignItems: 'center', marginTop: SPACING.xl, borderWidth: 1.5, borderColor: COLORS.black, height: 52, justifyContent: 'center' },
+  saveButtonEdit:     { backgroundColor: COLORS.accent, borderColor: COLORS.accent },
   saveButtonDisabled: { opacity: 0.6 },
   saveButtonText:     { color: COLORS.white, fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold },
 
@@ -328,18 +460,23 @@ const styles = StyleSheet.create({
   dividerLine:     { flex: 1, height: 1.5, backgroundColor: COLORS.borderLight },
   dividerLabel:    { fontSize: FONTS.sizes.xs, fontWeight: FONTS.weights.semibold, color: COLORS.textTertiary, textTransform: 'uppercase', letterSpacing: 0.5 },
 
-  sessionCard:    { flexDirection: 'row', alignItems: 'flex-start', borderWidth: 1.5, borderColor: COLORS.borderLight, borderRadius: RADIUS.md, padding: SPACING.md, marginBottom: SPACING.sm, backgroundColor: COLORS.white, gap: SPACING.sm },
-  sessionLeft:    { flex: 1, gap: 3 },
-  sessionCatChip: { flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', backgroundColor: COLORS.surface, borderRadius: RADIUS.full, paddingHorizontal: SPACING.sm, paddingVertical: 2, borderWidth: 1, borderColor: COLORS.borderLight },
-  sessionCatEmoji: { fontSize: 12 },
-  sessionCatLabel: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, fontWeight: FONTS.weights.medium },
-  sessionTitle:    { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
-  sessionDesc:     { fontSize: FONTS.sizes.sm, color: COLORS.textTertiary },
-  sessionRight:    { alignItems: 'flex-end', gap: 8 },
-  sessionDuration: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
-  sessionDelete:   { fontSize: 14, color: COLORS.textTertiary, fontWeight: FONTS.weights.bold },
+  sessionCard:        { flexDirection: 'row', alignItems: 'flex-start', borderWidth: 1.5, borderColor: COLORS.borderLight, borderRadius: RADIUS.md, padding: SPACING.md, marginBottom: SPACING.sm, backgroundColor: COLORS.white, gap: SPACING.sm },
+  sessionCardEditing: { borderColor: COLORS.accent, borderWidth: 2, backgroundColor: COLORS.accentLight },
+  sessionLeft:        { flex: 1, gap: 3 },
+  sessionCatChip:     { flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start', backgroundColor: COLORS.surface, borderRadius: RADIUS.full, paddingHorizontal: SPACING.sm, paddingVertical: 2, borderWidth: 1, borderColor: COLORS.borderLight },
+  sessionCatEmoji:    { fontSize: 12 },
+  sessionCatLabel:    { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, fontWeight: FONTS.weights.medium },
+  sessionTitle:       { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
+  sessionDesc:        { fontSize: FONTS.sizes.sm, color: COLORS.textTertiary },
+  sessionRight:       { alignItems: 'flex-end', gap: 6 },
+  sessionDuration:    { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
+  sessionActions:     { flexDirection: 'row', gap: SPACING.sm, alignItems: 'center' },
+  actionBtn:          { padding: 2 },
+  actionBtnActive:    { opacity: 0.6 },
+  actionBtnIcon:      { fontSize: 14 },
+  sessionDelete:      { fontSize: 14, color: COLORS.textTertiary, fontWeight: FONTS.weights.bold },
 
-  totalRow:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: SPACING.sm, paddingVertical: SPACING.sm, borderTopWidth: 1.5, borderTopColor: COLORS.borderLight, marginTop: 4 },
-  totalLabel:    { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 },
-  totalValue:    { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
+  totalRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: SPACING.sm, paddingVertical: SPACING.sm, borderTopWidth: 1.5, borderTopColor: COLORS.borderLight, marginTop: 4 },
+  totalLabel: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 },
+  totalValue: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
 });

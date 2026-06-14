@@ -1,27 +1,96 @@
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import {
-    Alert,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Alert,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { CATEGORIES, COLORS, FONTS, RADIUS, SPACING } from '../../src/constants/theme';
 import { LearningEntry } from '../../src/types';
-import { deleteEntry, formatDate, getAllEntries } from '../../src/utils/storage';
+import {
+  deleteEntry,
+  formatMinutes,
+  getAllEntries,
+  getEntriesForDate,
+  getTodayDate,
+  recalculateStreakAfterDeletion,
+  setPendingEdit,
+} from '../../src/utils/storage';
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface DayGroup {
+  date: string;          // YYYY-MM-DD
+  sessions: LearningEntry[];
+  totalMinutes: number;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function groupByDate(entries: LearningEntry[]): DayGroup[] {
+  const map: Record<string, LearningEntry[]> = {};
+  for (const e of entries) {
+    if (!map[e.date]) map[e.date] = [];
+    map[e.date].push(e);
+  }
+  return Object.entries(map)
+    .map(([date, sessions]) => ({
+      date,
+      sessions: sessions.sort((a, b) => a.createdAt - b.createdAt), // chronological within day
+      totalMinutes: sessions.reduce((s, e) => s + e.duration, 0),
+    }))
+    .sort((a, b) => (a.date < b.date ? 1 : -1)); // newest day first
+}
+
+function groupByMonth(days: DayGroup[]): Record<string, DayGroup[]> {
+  const map: Record<string, DayGroup[]> = {};
+  for (const day of days) {
+    const d   = new Date(day.date + 'T12:00:00');
+    // Key format: "YYYY-MM" so we can sort correctly
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    if (!map[key]) map[key] = [];
+    map[key].push(day);
+  }
+  return map;
+}
+
+function monthKeyToLabel(key: string): string {
+  const [year, month] = key.split('-');
+  return new Date(Number(year), Number(month) - 1, 1)
+    .toLocaleString('default', { month: 'long', year: 'numeric' });
+}
+
+function shortDate(date: string): string {
+  return new Date(date + 'T12:00:00').toLocaleDateString('en-IN', {
+    weekday: 'short', day: 'numeric', month: 'short',
+  });
+}
+
+// Cross-platform delete confirm (Alert.alert is no-op on web)
+async function confirmDelete(message: string): Promise<boolean> {
+  if (Platform.OS === 'web') return window.confirm(message);
+  return new Promise((resolve) =>
+    Alert.alert('Delete session?', message, [
+      { text: 'Cancel',  style: 'cancel',     onPress: () => resolve(false) },
+      { text: 'Delete',  style: 'destructive', onPress: () => resolve(true)  },
+    ])
+  );
+}
+
+// ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function HistoryScreen() {
-  const [entries, setEntries] = useState<LearningEntry[]>([]);
-  const [search, setSearch] = useState('');
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [entries, setEntries]         = useState<LearningEntry[]>([]);
+  const [search, setSearch]           = useState('');
+  const [expandedDate, setExpandedDate] = useState<string | null>(null);
 
   useFocusEffect(
-    useCallback(() => {
-      loadEntries();
-    }, [])
+    useCallback(() => { loadEntries(); }, [])
   );
 
   async function loadEntries() {
@@ -29,220 +98,366 @@ export default function HistoryScreen() {
     setEntries(all);
   }
 
-  function handleDelete(entry: LearningEntry) {
-    Alert.alert(
-      'Delete entry?',
-      `Remove the entry for ${formatDate(entry.date)}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            await deleteEntry(entry.id);
-            await loadEntries();
-          },
-        },
-      ]
-    );
+  async function handleDeleteSession(session: LearningEntry) {
+    const confirmed = await confirmDelete(`Remove "${session.title}"?`);
+    if (!confirmed) return;
+
+    await deleteEntry(session.id);
+
+    // If it was the last session on that day, recalculate streak
+    const remaining = await getEntriesForDate(session.date);
+    if (remaining.length === 0) {
+      await recalculateStreakAfterDeletion();
+    }
+
+    await loadEntries();
   }
 
-  const filtered = entries.filter(
-    (e) =>
-      e.title.toLowerCase().includes(search.toLowerCase()) ||
-      e.description.toLowerCase().includes(search.toLowerCase()) ||
-      e.date.includes(search)
-  );
+  // Filter across title, description, date, and category label
+  const filtered = entries.filter((e) => {
+    const q = search.toLowerCase();
+    if (!q) return true;
+    const catLabel = CATEGORIES.find((c) => c.id === e.category)?.label ?? '';
+    return (
+      e.title.toLowerCase().includes(q) ||
+      e.description.toLowerCase().includes(q) ||
+      e.date.includes(q) ||
+      catLabel.toLowerCase().includes(q)
+    );
+  });
 
-  // Group by month
-  const grouped = groupByMonth(filtered);
+  async function handleEditSession(session: LearningEntry) {
+    // Store the session to edit in AsyncStorage, then navigate to Add tab.
+    // The Add tab reads this on focus and pre-fills the form.
+    await setPendingEdit(session);
+    router.navigate('/(tabs)/');
+  }
+
+  const today      = getTodayDate();
+  const dayGroups  = groupByDate(filtered);
+  const byMonth    = groupByMonth(dayGroups);
+  const monthKeys  = Object.keys(byMonth).sort((a, b) => (a < b ? 1 : -1)); // newest first
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.heading}>📋 History</Text>
 
       {/* Search */}
-      <View style={styles.searchRow}>
-        <TextInput
-          style={styles.searchInput}
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Search entries..."
-          placeholderTextColor={COLORS.textTertiary}
-          clearButtonMode="while-editing"
-        />
-      </View>
+      <TextInput
+        style={styles.searchInput}
+        value={search}
+        onChangeText={setSearch}
+        placeholder="Search by title, category, date..."
+        placeholderTextColor={COLORS.textTertiary}
+        clearButtonMode="while-editing"
+      />
 
       {entries.length === 0 ? (
-        <View style={styles.emptyState}>
-          <Text style={styles.emptyEmoji}>📭</Text>
-          <Text style={styles.emptyText}>No entries yet.</Text>
-          <Text style={styles.emptySubtext}>Go to Add tab to log your first day!</Text>
-        </View>
-      ) : filtered.length === 0 ? (
-        <View style={styles.emptyState}>
-          <Text style={styles.emptyEmoji}>🔍</Text>
-          <Text style={styles.emptyText}>No results</Text>
-          <Text style={styles.emptySubtext}>Try a different search term.</Text>
-        </View>
+        <EmptyState emoji="📭" text="No entries yet." sub="Go to Add tab to log your first day!" />
+      ) : dayGroups.length === 0 ? (
+        <EmptyState emoji="🔍" text="No results." sub="Try a different search term." />
       ) : (
-        Object.entries(grouped)
-          .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-          .map(([month, monthEntries]) => (
-            <View key={month}>
-              <Text style={styles.monthLabel}>{month}</Text>
-              {monthEntries.map((entry) => (
-                <HistoryCard
-                  key={entry.id}
-                  entry={entry}
-                  expanded={expandedId === entry.id}
-                  onPress={() => setExpandedId(expandedId === entry.id ? null : entry.id)}
-                  onDelete={() => handleDelete(entry)}
-                />
-              ))}
+        monthKeys.map((monthKey) => (
+          <View key={monthKey}>
+            {/* Month header */}
+            <View style={styles.monthHeader}>
+              <Text style={styles.monthLabel}>{monthKeyToLabel(monthKey)}</Text>
+              <Text style={styles.monthCount}>
+                {byMonth[monthKey].length} day{byMonth[monthKey].length !== 1 ? 's' : ''}
+              </Text>
             </View>
-          ))
+
+            {byMonth[monthKey].map((day) => (
+              <DayCard
+                key={day.date}
+                day={day}
+                isToday={day.date === today}
+                expanded={expandedDate === day.date}
+                onPress={() => setExpandedDate(expandedDate === day.date ? null : day.date)}
+                onDeleteSession={handleDeleteSession}
+                onEditSession={handleEditSession}
+              />
+            ))}
+          </View>
+        ))
       )}
+
       <View style={{ height: SPACING.xxl }} />
     </ScrollView>
   );
 }
 
-function HistoryCard({
-  entry,
+// ── Day card — groups all sessions for one date ───────────────────────────────
+
+function DayCard({
+  day,
+  isToday,
   expanded,
   onPress,
-  onDelete,
+  onDeleteSession,
+  onEditSession,
 }: {
-  entry: LearningEntry;
+  day: DayGroup;
+  isToday: boolean;
   expanded: boolean;
   onPress: () => void;
-  onDelete: () => void;
+  onDeleteSession: (s: LearningEntry) => void;
+  onEditSession: (s: LearningEntry) => void;
 }) {
-  const today = new Date().toISOString().split('T')[0];
-  const isToday = entry.date === today;
+  // Unique categories across sessions for the summary chips
+  const uniqueCats = [...new Set(day.sessions.map((s) => s.category))];
 
   return (
-    <TouchableOpacity
-      style={[styles.card, isToday && styles.cardToday]}
-      onPress={onPress}
-      activeOpacity={0.8}
-    >
-      {/* Header row */}
-      <View style={styles.cardHeader}>
-        <View style={styles.cardDateBox}>
-          <Text style={styles.cardDay}>{entry.date.split('-')[2]}</Text>
-          <Text style={styles.cardMonth}>
-            {new Date(entry.date + 'T12:00:00').toLocaleString('default', { month: 'short' })}
+    <View style={[styles.dayCard, isToday && styles.dayCardToday]}>
+
+      {/* ── Day header — always visible, tap to expand ── */}
+      <TouchableOpacity
+        style={styles.dayHeader}
+        onPress={onPress}
+        activeOpacity={0.7}
+      >
+        {/* Date box */}
+        <View style={[styles.dateBox, isToday && styles.dateBoxToday]}>
+          <Text style={[styles.dateDay, isToday && styles.dateDayToday]}>
+            {day.date.split('-')[2]}
+          </Text>
+          <Text style={[styles.dateMon, isToday && styles.dateMonToday]}>
+            {new Date(day.date + 'T12:00:00').toLocaleString('default', { month: 'short' })}
           </Text>
         </View>
-        <View style={styles.cardMain}>
-          <Text style={styles.cardTitle} numberOfLines={expanded ? undefined : 1}>
-            {entry.title}
-          </Text>
+
+        {/* Summary */}
+        <View style={styles.daySummary}>
+          <Text style={styles.dayDateFull}>{shortDate(day.date)}</Text>
+
+          {/* Category chips — collapsed view */}
           <View style={styles.catChips}>
-            {entry.category && (() => {
-              const catDef = CATEGORIES.find((x) => x.id === entry.category);
+            {uniqueCats.map((cat) => {
+              const catDef = CATEGORIES.find((c) => c.id === cat);
               return (
-                <View key={entry.category} style={styles.miniChip}>
-                  <Text style={styles.miniChipText}>{catDef?.emoji} {catDef?.label ?? entry.category}</Text>
+                <View key={cat} style={styles.miniChip}>
+                  <Text style={styles.miniChipText}>{catDef?.emoji} {catDef?.label ?? cat}</Text>
                 </View>
               );
-            })()}
+            })}
           </View>
         </View>
-        <View style={styles.cardRight}>
-          {entry.duration > 0 && (
-            <Text style={styles.cardDuration}>{entry.duration}m</Text>
-          )}
-          <Text style={styles.expandIcon}>{expanded ? '▲' : '▼'}</Text>
-        </View>
-      </View>
 
-      {/* Expanded content */}
-      {expanded && entry.description ? (
-        <View style={styles.cardExpanded}>
-          <Text style={styles.cardDesc}>{entry.description}</Text>
-          <TouchableOpacity style={styles.deleteBtn} onPress={onDelete}>
-            <Text style={styles.deleteBtnText}>🗑 Delete entry</Text>
-          </TouchableOpacity>
+        {/* Right side: total time + session count + chevron */}
+        <View style={styles.dayRight}>
+          <Text style={styles.dayTotal}>{formatMinutes(day.totalMinutes)}</Text>
+          <Text style={styles.daySessionCount}>
+            {day.sessions.length} session{day.sessions.length !== 1 ? 's' : ''}
+          </Text>
+          <Text style={styles.chevron}>{expanded ? '▲' : '▼'}</Text>
         </View>
-      ) : null}
-    </TouchableOpacity>
+      </TouchableOpacity>
+
+      {/* ── Expanded: individual sessions ── */}
+      {expanded && (
+        <View style={styles.sessionList}>
+          {day.sessions.map((session, idx) => (
+            <SessionRow
+              key={session.id}
+              session={session}
+              isLast={idx === day.sessions.length - 1}
+              onDelete={() => onDeleteSession(session)}
+              onEdit={() => onEditSession(session)}
+            />
+          ))}
+
+          {/* Day total footer */}
+          <View style={styles.dayFooter}>
+            <Text style={styles.dayFooterLabel}>Total</Text>
+            <Text style={styles.dayFooterValue}>{formatMinutes(day.totalMinutes)}</Text>
+          </View>
+        </View>
+      )}
+    </View>
   );
 }
 
-function groupByMonth(entries: LearningEntry[]): Record<string, LearningEntry[]> {
-  const groups: Record<string, LearningEntry[]> = {};
-  for (const entry of entries) {
-    const d = new Date(entry.date + 'T12:00:00');
-    const key = d.toLocaleString('default', { month: 'long', year: 'numeric' });
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(entry);
-  }
-  return groups;
+// ── Individual session row inside an expanded day ─────────────────────────────
+
+function SessionRow({
+  session,
+  isLast,
+  onDelete,
+  onEdit,
+}: {
+  session: LearningEntry;
+  isLast: boolean;
+  onDelete: () => void;
+  onEdit: () => void;
+}) {
+  const catDef = CATEGORIES.find((c) => c.id === session.category);
+
+  return (
+    <View style={[styles.sessionRow, !isLast && styles.sessionRowBorder]}>
+      <View style={styles.sessionLeft}>
+        {/* Category pill */}
+        <View style={styles.sessionCatChip}>
+          <Text style={styles.sessionCatEmoji}>{catDef?.emoji}</Text>
+          <Text style={styles.sessionCatLabel}>{catDef?.label ?? session.category}</Text>
+        </View>
+        <Text style={styles.sessionTitle}>{session.title}</Text>
+        {session.description ? (
+          <Text style={styles.sessionDesc} numberOfLines={2}>{session.description}</Text>
+        ) : null}
+      </View>
+
+      <View style={styles.sessionRight}>
+        <Text style={styles.sessionDuration}>{formatMinutes(session.duration)}</Text>
+        <View style={styles.sessionActions}>
+          <TouchableOpacity
+            onPress={onEdit}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Text style={styles.sessionEdit}>✏️</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={onDelete}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <Text style={styles.sessionDelete}>✕</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
 }
+
+// ── Empty state ───────────────────────────────────────────────────────────────
+
+function EmptyState({ emoji, text, sub }: { emoji: string; text: string; sub: string }) {
+  return (
+    <View style={styles.emptyState}>
+      <Text style={styles.emptyEmoji}>{emoji}</Text>
+      <Text style={styles.emptyText}>{text}</Text>
+      <Text style={styles.emptySubtext}>{sub}</Text>
+    </View>
+  );
+}
+
+// ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.white },
-  content: { padding: SPACING.md },
-  heading: { fontSize: FONTS.sizes.xl, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary, marginBottom: SPACING.md },
+  content:   { padding: SPACING.md },
 
-  searchRow: { marginBottom: SPACING.md },
+  heading: {
+    fontSize: FONTS.sizes.xl, fontWeight: FONTS.weights.bold,
+    color: COLORS.textPrimary, marginBottom: SPACING.md,
+  },
+
   searchInput: {
     borderWidth: 1.5, borderColor: COLORS.borderLight,
     borderRadius: RADIUS.md, padding: SPACING.md,
     fontSize: FONTS.sizes.md, color: COLORS.textPrimary,
-    backgroundColor: COLORS.offWhite,
+    backgroundColor: COLORS.offWhite, marginBottom: SPACING.md,
   },
 
+  // Month section
+  monthHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginTop: SPACING.lg, marginBottom: SPACING.sm,
+  },
   monthLabel: {
     fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold,
-    color: COLORS.textSecondary, marginBottom: SPACING.sm, marginTop: SPACING.md,
-    textTransform: 'uppercase', letterSpacing: 0.5,
+    color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5,
   },
+  monthCount: { fontSize: FONTS.sizes.xs, color: COLORS.textTertiary },
 
-  card: {
+  // Day card
+  dayCard: {
     borderWidth: 1.5, borderColor: COLORS.borderLight,
     borderRadius: RADIUS.md, marginBottom: SPACING.sm,
     backgroundColor: COLORS.white, overflow: 'hidden',
   },
-  cardToday: { borderColor: COLORS.black, borderWidth: 2 },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', padding: SPACING.md, gap: SPACING.sm },
-  cardDateBox: {
+  dayCardToday: { borderColor: COLORS.black, borderWidth: 2 },
+
+  // Day header
+  dayHeader: {
+    flexDirection: 'row', alignItems: 'center',
+    padding: SPACING.md, gap: SPACING.sm,
+  },
+
+  // Date box
+  dateBox: {
     width: 44, alignItems: 'center',
     borderWidth: 1.5, borderColor: COLORS.borderLight,
     borderRadius: RADIUS.sm, paddingVertical: 4,
   },
-  cardDay: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary, lineHeight: 22 },
-  cardMonth: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, fontWeight: FONTS.weights.medium },
-  cardMain: { flex: 1 },
-  cardTitle: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary, marginBottom: 4 },
-  catChips: { flexDirection: 'row', gap: 4, flexWrap: 'wrap' },
+  dateBoxToday: { borderColor: COLORS.black, backgroundColor: COLORS.black },
+  dateDay:      { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary, lineHeight: 22 },
+  dateDayToday: { color: COLORS.white },
+  dateMon:      { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, fontWeight: FONTS.weights.medium },
+  dateMonToday: { color: COLORS.white },
+
+  // Day summary (middle column)
+  daySummary:   { flex: 1, gap: 4 },
+  dayDateFull:  { fontSize: FONTS.sizes.xs, color: COLORS.textTertiary },
+  catChips:     { flexDirection: 'row', gap: 4, flexWrap: 'wrap' },
   miniChip: {
     backgroundColor: COLORS.surface, borderRadius: RADIUS.full,
     paddingHorizontal: SPACING.sm, paddingVertical: 2,
     borderWidth: 1, borderColor: COLORS.borderLight,
   },
   miniChipText: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary },
-  cardRight: { alignItems: 'flex-end', gap: 4 },
-  cardDuration: { fontSize: FONTS.sizes.xs, color: COLORS.textTertiary },
-  expandIcon: { fontSize: 10, color: COLORS.textTertiary },
 
-  cardExpanded: {
+  // Day right column
+  dayRight:        { alignItems: 'flex-end', gap: 2 },
+  dayTotal:        { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
+  daySessionCount: { fontSize: FONTS.sizes.xs, color: COLORS.textTertiary },
+  chevron:         { fontSize: 10, color: COLORS.textTertiary, marginTop: 2 },
+
+  // Session list (expanded)
+  sessionList: {
     borderTopWidth: 1, borderTopColor: COLORS.borderLight,
-    padding: SPACING.md, backgroundColor: COLORS.offWhite,
+    backgroundColor: COLORS.offWhite,
   },
-  cardDesc: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, lineHeight: 20 },
-  deleteBtn: {
-    marginTop: SPACING.md, alignSelf: 'flex-end',
+  sessionRow: {
+    flexDirection: 'row', alignItems: 'flex-start',
     paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
-    borderWidth: 1, borderColor: COLORS.danger, borderRadius: RADIUS.sm,
+    gap: SPACING.sm,
   },
-  deleteBtnText: { fontSize: FONTS.sizes.sm, color: COLORS.danger },
+  sessionRowBorder: {
+    borderBottomWidth: 1, borderBottomColor: COLORS.borderLight,
+  },
+  sessionLeft:    { flex: 1, gap: 3 },
+  sessionCatChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    alignSelf: 'flex-start',
+    backgroundColor: COLORS.white, borderRadius: RADIUS.full,
+    paddingHorizontal: SPACING.sm, paddingVertical: 2,
+    borderWidth: 1, borderColor: COLORS.borderLight,
+  },
+  sessionCatEmoji: { fontSize: 11 },
+  sessionCatLabel: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, fontWeight: FONTS.weights.medium },
+  sessionTitle:    { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
+  sessionDesc:     { fontSize: FONTS.sizes.xs, color: COLORS.textTertiary, lineHeight: 16 },
 
-  emptyState: { alignItems: 'center', paddingVertical: SPACING.xxl },
-  emptyEmoji: { fontSize: 48, marginBottom: SPACING.md },
-  emptyText: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
+  sessionRight:   { alignItems: 'flex-end', gap: 6, paddingTop: 2 },
+  sessionDuration: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
+  sessionActions: { flexDirection: 'row', gap: SPACING.sm, alignItems: 'center' },
+  sessionEdit:    { fontSize: 13 },
+  sessionDelete:  { fontSize: 13, color: COLORS.textTertiary, fontWeight: FONTS.weights.bold },
+
+  // Day footer
+  dayFooter: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
+    borderTopWidth: 1, borderTopColor: COLORS.borderLight,
+  },
+  dayFooterLabel: {
+    fontSize: FONTS.sizes.xs, fontWeight: FONTS.weights.semibold,
+    color: COLORS.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5,
+  },
+  dayFooterValue: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
+
+  // Empty states
+  emptyState:   { alignItems: 'center', paddingVertical: SPACING.xxl },
+  emptyEmoji:   { fontSize: 48, marginBottom: SPACING.md },
+  emptyText:    { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.semibold, color: COLORS.textPrimary },
   emptySubtext: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginTop: 4 },
 });
