@@ -6,23 +6,26 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from 'react-native';
-import { COLORS, FONTS, RADIUS, SPACING } from '../constants/theme';
+import { COLORS, RADIUS, SPACING } from '../constants/theme';
 
-// expo-speech-recognition uses the device's native STT engine (Google on Android).
-// No API key needed, works offline for supported languages.
-// Import is wrapped in try/catch so the app still works if the package
-// isn't installed yet — voice button just shows as disabled.
-let ExpoSpeechRecognitionModule: any = null;
-let useSpeechRecognitionEvent: any = null;
+// ── Optional package loading ──────────────────────────────────────────────────
+let SpeechModule: any   = null;
+let useSpeechEvent: any = null;
 try {
-  const mod = require('expo-speech-recognition');
-  ExpoSpeechRecognitionModule = mod.ExpoSpeechRecognitionModule;
-  useSpeechRecognitionEvent = mod.useSpeechRecognitionEvent;
-} catch {
-  // Package not installed — voice input gracefully disabled
-}
+  const mod    = require('expo-speech-recognition');
+  SpeechModule = mod.ExpoSpeechRecognitionModule;
+  useSpeechEvent = mod.useSpeechRecognitionEvent;
+} catch {}
+
+// ── Active field registry ─────────────────────────────────────────────────────
+// One module-level id tracks which VoiceInput instance is currently listening.
+// Each instance is assigned a stable numeric id on mount.
+let nextId  = 0;
+let activeId = -1; // -1 = nobody listening
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 interface VoiceInputProps {
   value: string;
@@ -41,63 +44,76 @@ export default function VoiceInput({
   value,
   onChangeText,
   placeholder,
-  multiline = false,
+  multiline     = false,
   numberOfLines = 1,
-  keyboardType = 'default',
+  keyboardType  = 'default',
   maxLength,
   style,
   inputStyle,
   editable = true,
 }: VoiceInputProps) {
+  // Stable id for this instance — never changes after mount
+  const myId = useRef(nextId++).current;
+
   const [listening, setListening] = useState(false);
+  // Mirror of listening in a ref — readable inside event callbacks
+  // without stale closure issues
+  const listeningRef = useRef(false);
+
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const pulseLoop = useRef<Animated.CompositeAnimation | null>(null);
 
-  // ── Speech recognition event handlers ──────────────────────────────────────
-  // These hooks are only registered when the package is available.
-  // When listening, we APPEND the recognised transcript to existing text
-  // so the user can speak in multiple bursts.
+  // Always-updated ref for this field's transcript handler
+  const handleTranscript = useRef<(t: string) => void>(() => {});
+  handleTranscript.current = (transcript: string) => {
+    if (keyboardType === 'number-pad' || keyboardType === 'numeric') {
+      const digits = transcript.replace(/[^0-9]/g, '');
+      if (digits) onChangeText(digits);
+    } else {
+      const newText = value ? `${value} ${transcript}` : transcript;
+      onChangeText(maxLength ? newText.slice(0, maxLength) : newText);
+    }
+  };
 
-  if (useSpeechRecognitionEvent) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    useSpeechRecognitionEvent('result', (event: any) => {
-      if (event.results?.[0]?.transcript) {
-        const transcript: string = event.results[0].transcript;
-        // For number-pad fields (duration), only keep digits
-        if (keyboardType === 'number-pad' || keyboardType === 'numeric') {
-          const digits = transcript.replace(/[^0-9]/g, '');
-          if (digits) onChangeText(digits);
-        } else {
-          // Append with a space if there's already text
-          const newText = value ? `${value} ${transcript}` : transcript;
-          onChangeText(maxLength ? newText.slice(0, maxLength) : newText);
-        }
-      }
-    });
+  // ── Event listeners — ALWAYS called (no conditional hook) ─────────────────
+  // React requires hooks to be called unconditionally.
+  // We guard with `activeId === myId` instead of an `if (package)` wrapper.
+  // When package is absent, useSpeechEvent is null and we call a no-op.
 
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    useSpeechRecognitionEvent('end', () => {
-      stopPulse();
-      setListening(false);
-    });
+  const safeUseEvent = useSpeechEvent ?? (((_: string, __: any) => {}) as any);
 
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    useSpeechRecognitionEvent('error', (event: any) => {
-      stopPulse();
-      setListening(false);
-      // Ignore "no-speech" — user just didn't say anything
-      if (event.error !== 'no-speech') {
-        Alert.alert('Voice error', 'Could not recognise speech. Please try again.');
-      }
-    });
-  }
+  safeUseEvent('result', (event: any) => {
+    if (activeId !== myId) return;
+    const transcript: string = event?.results?.[0]?.transcript ?? '';
+    if (transcript) handleTranscript.current(transcript);
+  });
 
-  // ── Pulse animation while listening ────────────────────────────────────────
+  safeUseEvent('end', () => {
+    if (activeId !== myId) return;
+    activeId = -1;
+    listeningRef.current = false;
+    setListening(false);
+    stopPulse();
+  });
+
+  safeUseEvent('error', (event: any) => {
+    if (activeId !== myId) return;
+    activeId = -1;
+    listeningRef.current = false;
+    setListening(false);
+    stopPulse();
+    if (event?.error !== 'no-speech') {
+      Alert.alert('Voice error', 'Could not recognise speech. Please try again.');
+    }
+  });
+
+  // ── Pulse ─────────────────────────────────────────────────────────────────
+
   function startPulse() {
     pulseLoop.current = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.3, duration: 500, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1.0, duration: 500, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.25, duration: 500, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.0,  duration: 500, useNativeDriver: true }),
       ])
     );
     pulseLoop.current.start();
@@ -108,9 +124,10 @@ export default function VoiceInput({
     pulseAnim.setValue(1);
   }
 
-  // ── Toggle listening ────────────────────────────────────────────────────────
+  // ── Mic press ─────────────────────────────────────────────────────────────
+
   async function handleMicPress() {
-    if (!ExpoSpeechRecognitionModule) {
+    if (!SpeechModule) {
       Alert.alert(
         'Voice not available',
         'Run: npx expo install expo-speech-recognition\nthen rebuild the app.'
@@ -118,16 +135,24 @@ export default function VoiceInput({
       return;
     }
 
-    if (listening) {
-      // User tapped mic again — stop early
-      ExpoSpeechRecognitionModule.stop();
-      stopPulse();
+    // Already listening on THIS field — stop it
+    if (listeningRef.current) {
+      SpeechModule.stop();
+      activeId = -1;
+      listeningRef.current = false;
       setListening(false);
+      stopPulse();
       return;
     }
 
-    // Request mic permission
-    const { status } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+    // Another field is listening — stop it first
+    if (activeId !== -1) {
+      SpeechModule.stop();
+      activeId = -1;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    const { status } = await SpeechModule.requestPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert(
         'Microphone permission needed',
@@ -136,18 +161,21 @@ export default function VoiceInput({
       return;
     }
 
+    // Claim ownership
+    activeId = myId;
+    listeningRef.current = true;
     setListening(true);
     startPulse();
 
-    ExpoSpeechRecognitionModule.start({
-      lang: 'en-IN', // Indian English — change to 'en-US' if preferred
+    SpeechModule.start({
+      lang: 'en-IN',
       interimResults: false,
       maxAlternatives: 1,
-      continuous: false, // auto-stops after silence
+      continuous: false,
     });
   }
 
-  const voiceAvailable = !!ExpoSpeechRecognitionModule;
+  const voiceAvailable = !!SpeechModule;
 
   return (
     <View style={[styles.container, style]}>
@@ -156,7 +184,6 @@ export default function VoiceInput({
           styles.input,
           multiline && styles.multiline,
           multiline && { minHeight: numberOfLines * 24 + SPACING.md * 2 },
-          // Shrink right padding to make room for mic button
           voiceAvailable && styles.inputWithMic,
           inputStyle,
         ]}
@@ -176,7 +203,6 @@ export default function VoiceInput({
         <Animated.View
           style={[
             styles.micWrap,
-            // Align mic to top for multiline, centre for single line
             multiline ? styles.micTop : styles.micCenter,
             { transform: [{ scale: pulseAnim }] },
           ]}
@@ -196,53 +222,30 @@ export default function VoiceInput({
 }
 
 const styles = StyleSheet.create({
-  container: {
-    position: 'relative',
-  },
+  container:    { position: 'relative' },
   input: {
     borderWidth: 1.5,
     borderColor: COLORS.borderLight,
     borderRadius: RADIUS.md,
     padding: SPACING.md,
-    fontSize: FONTS.sizes.md,
+    fontSize: 15,
     color: COLORS.textPrimary,
     backgroundColor: COLORS.white,
   },
-  inputWithMic: {
-    // Reserve space on the right for the mic button
-    paddingRight: 52,
-  },
-  multiline: {
-    paddingTop: SPACING.md,
-  },
-
-  micWrap: {
-    position: 'absolute',
-    right: SPACING.sm,
-  },
-  micCenter: {
-    top: '50%',
-    marginTop: -18, // half of mic button height (36/2)
-  },
-  micTop: {
-    top: SPACING.sm,
-  },
-
+  inputWithMic: { paddingRight: 52 },
+  multiline:    { paddingTop: SPACING.md },
+  micWrap:      { position: 'absolute', right: SPACING.sm },
+  micCenter:    { top: '50%', marginTop: -18 },
+  micTop:       { top: SPACING.sm },
   micBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: RADIUS.full,
+    width: 36, height: 36,
+    borderRadius: 999,
     backgroundColor: COLORS.surface,
     borderWidth: 1.5,
     borderColor: COLORS.borderLight,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  micBtnActive: {
-    backgroundColor: COLORS.danger,
-    borderColor: COLORS.danger,
-  },
-  micIcon: {
-    fontSize: 16,
-  },
+  micBtnActive: { backgroundColor: COLORS.danger, borderColor: COLORS.danger },
+  micIcon:      { fontSize: 16 },
 });
