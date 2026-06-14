@@ -1,17 +1,17 @@
-import React, { useState, useCallback } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  Alert,
-} from 'react-native';
 import { useFocusEffect } from 'expo-router';
-import { COLORS, FONTS, SPACING, RADIUS, CATEGORIES } from '../../src/constants/theme';
-import { getAllEntries, deleteEntry, formatDate } from '../../src/utils/storage';
+import React, { useCallback, useState } from 'react';
+import {
+    Alert,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+} from 'react-native';
+import { CATEGORIES, COLORS, FONTS, RADIUS, SPACING } from '../../src/constants/theme';
 import { LearningEntry } from '../../src/types';
+import { deleteEntry, formatDate, getAllEntries } from '../../src/utils/storage';
 
 export default function HistoryScreen() {
   const [entries, setEntries] = useState<LearningEntry[]>([]);
@@ -141,14 +141,14 @@ function HistoryCard({
             {entry.title}
           </Text>
           <View style={styles.catChips}>
-            {entry.categories.map((c) => {
-              const catDef = CATEGORIES.find((x) => x.id === c);
+            {entry.category && (() => {
+              const catDef = CATEGORIES.find((x) => x.id === entry.category);
               return (
-                <View key={c} style={styles.miniChip}>
-                  <Text style={styles.miniChipText}>{catDef?.emoji} {catDef?.label ?? c}</Text>
+                <View key={entry.category} style={styles.miniChip}>
+                  <Text style={styles.miniChipText}>{catDef?.emoji} {catDef?.label ?? entry.category}</Text>
                 </View>
               );
-            })}
+            })()}
           </View>
         </View>
         <View style={styles.cardRight}>

@@ -1,18 +1,43 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
 import { useFocusEffect } from 'expo-router';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
-import { getAllEntries, getStreak } from '../../src/utils/storage';
-import { LearningEntry, StreakData } from '../../src/types';
+import React, { useCallback, useState } from 'react';
+import {
+  Dimensions,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { COLORS, FONTS, RADIUS, SPACING } from '../../src/constants/theme';
+import { DaySummary, StreakData } from '../../src/types';
+import { getDaySummaries, getStreak, getTodayDate } from '../../src/utils/storage';
 
-const DAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const SCREEN_W  = Dimensions.get('window').width;
+const CELL      = 13;  // px — each day square
+const CELL_GAP  = 3;   // px — gap between squares
+const COL_W     = CELL + CELL_GAP;
+const NUM_WEEKS = 52;
+const DAYS_BACK = NUM_WEEKS * 7; // 364 days
+
+const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const DAY_LABELS   = ['', 'Mon', '', 'Wed', '', 'Fri', ''];
+
+// Intensity levels → opacity of black fill (GitHub-style 4 levels + empty)
+function intensityColor(minutes: number, maxMinutes: number): string {
+  if (minutes === 0 || maxMinutes === 0) return COLORS.surface;
+  const ratio = minutes / maxMinutes;
+  if (ratio < 0.25) return '#C6E6C6'; // light green — low
+  if (ratio < 0.50) return '#6DBF6D'; // medium green
+  if (ratio < 0.75) return '#2E8B2E'; // dark green
+  return '#145214';                    // darkest — high activity
+}
+
+// ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function StreakScreen() {
-  const [entries, setEntries] = useState<LearningEntry[]>([]);
-  const [streak, setStreak] = useState<StreakData | null>(null);
-  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
-  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [daySummaries, setDaySummaries] = useState<DaySummary[]>([]);
+  const [streak, setStreak]             = useState<StreakData | null>(null);
+  const [selectedDay, setSelectedDay]   = useState<DaySummary | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -21,140 +46,188 @@ export default function StreakScreen() {
   );
 
   async function loadData() {
-    const [all, s] = await Promise.all([getAllEntries(), getStreak()]);
-    setEntries(all);
+    const today   = getTodayDate();
+    const fromDate = offsetDate(today, -DAYS_BACK);
+    const [days, s] = await Promise.all([
+      getDaySummaries(fromDate, today),
+      getStreak(),
+    ]);
+    setDaySummaries(days);
     setStreak(s);
   }
 
-  const loggedDates = new Set(entries.map((e) => e.date));
-  const today = new Date().toISOString().split('T')[0];
+  // Build lookup map: date → DaySummary
+  const summaryMap = new Map(daySummaries.map((d) => [d.date, d]));
+  const maxMinutes = Math.max(...daySummaries.map((d) => d.totalMinutes), 1);
 
-  // Calendar generation
-  const firstDay = new Date(selectedYear, selectedMonth, 1);
-  const daysInMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
-  const startOffset = firstDay.getDay(); // 0=Sun
+  // Build 52-week grid: array of 7-day columns, oldest week first
+  const today     = getTodayDate();
+  const todayDate = new Date(today + 'T12:00:00');
 
-  const calCells: Array<{ date: string | null; day: number | null }> = [];
-  for (let i = 0; i < startOffset; i++) calCells.push({ date: null, day: null });
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateStr = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    calCells.push({ date: dateStr, day: d });
+  // Start from the Sunday 52 weeks ago
+  const gridStart = new Date(todayDate);
+  gridStart.setDate(gridStart.getDate() - DAYS_BACK);
+  // Align to Sunday
+  gridStart.setDate(gridStart.getDate() - gridStart.getDay());
+
+  // Build columns [week][day] — 53 cols × 7 rows to cover full range
+  const columns: Array<Array<{ date: string; inRange: boolean }>> = [];
+  const cursor = new Date(gridStart);
+  while (cursor <= todayDate) {
+    const col: Array<{ date: string; inRange: boolean }> = [];
+    for (let d = 0; d < 7; d++) {
+      const dateStr = cursor.toISOString().split('T')[0];
+      const inRange = dateStr >= offsetDate(today, -DAYS_BACK) && dateStr <= today;
+      col.push({ date: dateStr, inRange });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    columns.push(col);
   }
 
-  function prevMonth() {
-    if (selectedMonth === 0) { setSelectedMonth(11); setSelectedYear(y => y - 1); }
-    else setSelectedMonth(m => m - 1);
-  }
-  function nextMonth() {
-    const now = new Date();
-    if (selectedYear === now.getFullYear() && selectedMonth === now.getMonth()) return;
-    if (selectedMonth === 11) { setSelectedMonth(0); setSelectedYear(y => y + 1); }
-    else setSelectedMonth(m => m + 1);
-  }
+  // Month labels: for each column, if the first day of the column is the 1st of a month
+  // (or the column crosses a month boundary), show the month name
+  const monthLabels: Array<{ colIdx: number; label: string }> = [];
+  columns.forEach((col, i) => {
+    const firstOfCol = new Date(col[0].date + 'T12:00:00');
+    if (firstOfCol.getDate() <= 7 && (i === 0 || firstOfCol.getDate() <= COL_W)) {
+      monthLabels.push({ colIdx: i, label: MONTHS_SHORT[firstOfCol.getMonth()] });
+    }
+  });
 
-  const monthStr = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}`;
-  const monthEntries = entries.filter((e) => e.date.startsWith(monthStr));
-  const monthDays = monthEntries.length;
+  // Stats for the visible period
+  const totalMinutes  = daySummaries.reduce((s, d) => s + d.totalMinutes, 0);
+  const totalDays     = daySummaries.length;
+  const thisMonthStr  = today.slice(0, 7);
+  const thisMonthDays = daySummaries.filter((d) => d.date.startsWith(thisMonthStr)).length;
+
+  const heatmapW = columns.length * COL_W;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* Streak counter */}
+
+      {/* ── Streak hero ──────────────────────────────────────────────────── */}
       <View style={styles.streakHero}>
         <Text style={styles.streakFire}>🔥</Text>
         <Text style={styles.streakNumber}>{streak?.currentStreak ?? 0}</Text>
         <Text style={styles.streakLabel}>day streak</Text>
       </View>
 
+      {/* ── Stats row ────────────────────────────────────────────────────── */}
       <View style={styles.statsRow}>
-        <View style={styles.statBox}>
-          <Text style={styles.statNum}>{streak?.longestStreak ?? 0}</Text>
-          <Text style={styles.statLabel}>Best streak</Text>
-        </View>
-        <View style={[styles.statBox, styles.statBoxMid]}>
-          <Text style={styles.statNum}>{streak?.totalDaysLogged ?? 0}</Text>
-          <Text style={styles.statLabel}>Total days</Text>
-        </View>
-        <View style={styles.statBox}>
-          <Text style={styles.statNum}>{monthDays}</Text>
-          <Text style={styles.statLabel}>This month</Text>
-        </View>
+        <StatBox label="Best streak"  value={String(streak?.longestStreak ?? 0)} />
+        <StatBox label="Total days"   value={String(streak?.totalDaysLogged ?? 0)} mid />
+        <StatBox label="This month"   value={String(thisMonthDays)} />
       </View>
 
-      {/* Calendar */}
-      <View style={styles.calCard}>
-        {/* Month nav */}
-        <View style={styles.calHeader}>
-          <TouchableOpacity style={styles.navBtn} onPress={prevMonth}>
-            <Text style={styles.navBtnText}>‹</Text>
-          </TouchableOpacity>
-          <Text style={styles.monthTitle}>
-            {MONTHS[selectedMonth]} {selectedYear}
-          </Text>
-          <TouchableOpacity style={styles.navBtn} onPress={nextMonth}>
-            <Text style={styles.navBtnText}>›</Text>
-          </TouchableOpacity>
-        </View>
+      {/* ── Heatmap ──────────────────────────────────────────────────────── */}
+      <View style={styles.heatmapCard}>
+        <Text style={styles.heatmapTitle}>Last 52 weeks</Text>
 
-        {/* Day labels */}
-        <View style={styles.dayLabels}>
-          {DAYS.map((d, i) => (
-            <Text key={i} style={styles.dayLabel}>{d}</Text>
-          ))}
-        </View>
-
-        {/* Calendar grid */}
-        <View style={styles.grid}>
-          {calCells.map((cell, i) => {
-            if (!cell.date) {
-              return <View key={`empty-${i}`} style={styles.cell} />;
-            }
-            const logged = loggedDates.has(cell.date);
-            const isToday = cell.date === today;
-            const isFuture = cell.date > today;
-
-            return (
-              <View
-                key={cell.date}
-                style={[
-                  styles.cell,
-                  logged && styles.cellLogged,
-                  isToday && styles.cellToday,
-                  isFuture && styles.cellFuture,
-                ]}
-              >
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: SPACING.sm }}
+        >
+          <View>
+            {/* Month labels row */}
+            <View style={[styles.monthLabelRow, { width: heatmapW }]}>
+              {monthLabels.map(({ colIdx, label }) => (
                 <Text
-                  style={[
-                    styles.cellText,
-                    logged && styles.cellTextLogged,
-                    isToday && styles.cellTextToday,
-                    isFuture && styles.cellTextFuture,
-                  ]}
+                  key={colIdx}
+                  style={[styles.monthLabel, { left: colIdx * COL_W }]}
                 >
-                  {cell.day}
+                  {label}
                 </Text>
-              </View>
-            );
-          })}
-        </View>
+              ))}
+            </View>
 
-        {/* Legend */}
-        <View style={styles.legend}>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, styles.cellLogged]} />
-            <Text style={styles.legendLabel}>Logged</Text>
+            {/* Day labels + grid */}
+            <View style={styles.heatmapBody}>
+              {/* Day-of-week labels */}
+              <View style={styles.dayLabelCol}>
+                {DAY_LABELS.map((label, i) => (
+                  <Text key={i} style={styles.dayLabel}>{label}</Text>
+                ))}
+              </View>
+
+              {/* Week columns */}
+              <View style={{ flexDirection: 'row', gap: CELL_GAP }}>
+                {columns.map((col, ci) => (
+                  <View key={ci} style={{ flexDirection: 'column', gap: CELL_GAP }}>
+                    {col.map(({ date, inRange }) => {
+                      const summary = summaryMap.get(date);
+                      const mins    = summary?.totalMinutes ?? 0;
+                      const isToday = date === today;
+                      const bg      = !inRange
+                        ? 'transparent'
+                        : intensityColor(mins, maxMinutes);
+
+                      return (
+                        <TouchableOpacity
+                          key={date}
+                          style={[
+                            styles.cell,
+                            { backgroundColor: bg },
+                            isToday && styles.cellToday,
+                            !inRange && styles.cellOutOfRange,
+                          ]}
+                          onPress={() => inRange && setSelectedDay(summary ?? { date, totalMinutes: 0, entryCount: 0, categories: [] })}
+                          activeOpacity={0.7}
+                        />
+                      );
+                    })}
+                  </View>
+                ))}
+              </View>
+            </View>
+
+            {/* Legend */}
+            <View style={styles.legend}>
+              <Text style={styles.legendLabel}>Less</Text>
+              {[0, 0.2, 0.5, 0.75, 1].map((ratio) => (
+                <View
+                  key={ratio}
+                  style={[styles.legendCell, { backgroundColor: intensityColor(ratio * 60, 60) }]}
+                />
+              ))}
+              <Text style={styles.legendLabel}>More</Text>
+            </View>
           </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, styles.cell, { borderWidth: 2, borderColor: COLORS.black }]} />
-            <Text style={styles.legendLabel}>Today</Text>
-          </View>
-          <View style={styles.legendItem}>
-            <View style={[styles.legendDot, { backgroundColor: COLORS.surface }]} />
-            <Text style={styles.legendLabel}>Missed</Text>
-          </View>
+        </ScrollView>
+
+        {/* Tapped day tooltip */}
+        {selectedDay && (
+          <TouchableOpacity
+            style={styles.tooltip}
+            onPress={() => setSelectedDay(null)}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.tooltipDate}>{formatTooltipDate(selectedDay.date)}</Text>
+            {selectedDay.totalMinutes > 0 ? (
+              <>
+                <Text style={styles.tooltipValue}>
+                  {formatMinutes(selectedDay.totalMinutes)} across {selectedDay.entryCount} session{selectedDay.entryCount !== 1 ? 's' : ''}
+                </Text>
+              </>
+            ) : (
+              <Text style={styles.tooltipEmpty}>No sessions logged</Text>
+            )}
+            <Text style={styles.tooltipDismiss}>tap to dismiss</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* ── Year summary ─────────────────────────────────────────────────── */}
+      <View style={styles.yearCard}>
+        <Text style={styles.yearTitle}>Past 52 weeks</Text>
+        <View style={styles.yearStats}>
+          <YearStat label="Days logged"   value={String(totalDays)} />
+          <YearStat label="Time invested" value={formatMinutes(totalMinutes)} />
+          <YearStat label="Avg per day"   value={totalDays > 0 ? formatMinutes(Math.round(totalMinutes / totalDays)) : '—'} />
         </View>
       </View>
 
-      {/* Motivational message */}
+      {/* ── Motivational banner ───────────────────────────────────────────── */}
       <MotivationalBanner streak={streak?.currentStreak ?? 0} />
 
       <View style={{ height: SPACING.xxl }} />
@@ -162,21 +235,40 @@ export default function StreakScreen() {
   );
 }
 
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function StatBox({ label, value, mid }: { label: string; value: string; mid?: boolean }) {
+  return (
+    <View style={[styles.statBox, mid && styles.statBoxMid]}>
+      <Text style={styles.statNum}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function YearStat({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.yearStat}>
+      <Text style={styles.yearStatValue}>{value}</Text>
+      <Text style={styles.yearStatLabel}>{label}</Text>
+    </View>
+  );
+}
+
 function MotivationalBanner({ streak }: { streak: number }) {
   let msg = { emoji: '🌱', text: 'Start your streak today!', sub: 'Log your first day of learning' };
-
-  if (streak >= 365) msg = { emoji: '🏆', text: 'LEGENDARY!', sub: 'A full year of learning — you are incredible' };
+  if (streak >= 365) msg = { emoji: '🏆', text: 'LEGENDARY!',         sub: 'A full year of learning — you are incredible' };
   else if (streak >= 100) msg = { emoji: '🦉', text: 'Century Scholar!', sub: "100 days! You're in elite territory" };
-  else if (streak >= 30) msg = { emoji: '💎', text: 'Monthly Master!', sub: '30 days strong — amazing consistency' };
-  else if (streak >= 14) msg = { emoji: '⚡', text: 'On fire!', sub: '2 weeks of unstoppable learning' };
-  else if (streak >= 7) msg = { emoji: '🔥', text: 'Week Warrior!', sub: 'A whole week! Keep pushing' };
-  else if (streak >= 3) msg = { emoji: '✨', text: 'Building momentum!', sub: `${streak} days in — don't stop now` };
-  else if (streak >= 1) msg = { emoji: '🌟', text: 'Good start!', sub: 'Keep showing up every day' };
+  else if (streak >= 30)  msg = { emoji: '💎', text: 'Monthly Master!',  sub: '30 days strong — amazing consistency' };
+  else if (streak >= 14)  msg = { emoji: '⚡', text: 'On fire!',          sub: '2 weeks of unstoppable learning' };
+  else if (streak >= 7)   msg = { emoji: '🔥', text: 'Week Warrior!',    sub: 'A whole week! Keep pushing' };
+  else if (streak >= 3)   msg = { emoji: '✨', text: 'Building momentum!', sub: `${streak} days in — don't stop now` };
+  else if (streak >= 1)   msg = { emoji: '🌟', text: 'Good start!',       sub: 'Keep showing up every day' };
 
   return (
     <View style={styles.banner}>
       <Text style={styles.bannerEmoji}>{msg.emoji}</Text>
-      <View>
+      <View style={{ flex: 1 }}>
         <Text style={styles.bannerTitle}>{msg.text}</Text>
         <Text style={styles.bannerSub}>{msg.sub}</Text>
       </View>
@@ -184,55 +276,119 @@ function MotivationalBanner({ streak }: { streak: number }) {
   );
 }
 
-const CELL_SIZE = 40;
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function offsetDate(date: string, days: number): string {
+  const d = new Date(date + 'T12:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split('T')[0];
+}
+
+function formatMinutes(minutes: number): string {
+  if (minutes === 0) return '0m';
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+function formatTooltipDate(date: string): string {
+  return new Date(date + 'T12:00:00').toLocaleDateString('en-IN', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  });
+}
+
+// ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.white },
-  content: { padding: SPACING.md },
+  content:   { padding: SPACING.md },
 
-  streakHero: { alignItems: 'center', paddingVertical: SPACING.lg },
-  streakFire: { fontSize: 56 },
+  // Streak hero
+  streakHero:   { alignItems: 'center', paddingVertical: SPACING.lg },
+  streakFire:   { fontSize: 56 },
   streakNumber: { fontSize: 72, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary, lineHeight: 80 },
-  streakLabel: { fontSize: FONTS.sizes.lg, color: COLORS.textSecondary, fontWeight: FONTS.weights.medium },
+  streakLabel:  { fontSize: FONTS.sizes.lg, color: COLORS.textSecondary, fontWeight: FONTS.weights.medium },
 
-  statsRow: { flexDirection: 'row', borderWidth: 1.5, borderColor: COLORS.borderLight, borderRadius: RADIUS.md, marginBottom: SPACING.lg },
-  statBox: { flex: 1, alignItems: 'center', paddingVertical: SPACING.md },
+  // Stats row
+  statsRow:   { flexDirection: 'row', borderWidth: 1.5, borderColor: COLORS.borderLight, borderRadius: RADIUS.md, marginBottom: SPACING.lg },
+  statBox:    { flex: 1, alignItems: 'center', paddingVertical: SPACING.md },
   statBoxMid: { borderLeftWidth: 1.5, borderRightWidth: 1.5, borderColor: COLORS.borderLight },
-  statNum: { fontSize: FONTS.sizes.xl, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
-  statLabel: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 2, fontWeight: FONTS.weights.medium },
+  statNum:    { fontSize: FONTS.sizes.xl, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
+  statLabel:  { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 2, fontWeight: FONTS.weights.medium },
 
-  calCard: {
+  // Heatmap card
+  heatmapCard: {
     borderWidth: 1.5, borderColor: COLORS.borderLight,
-    borderRadius: RADIUS.lg, padding: SPACING.md, marginBottom: SPACING.lg,
+    borderRadius: RADIUS.lg, padding: SPACING.md,
+    marginBottom: SPACING.lg,
   },
-  calHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACING.md },
-  navBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: COLORS.borderLight, borderRadius: RADIUS.sm },
-  navBtnText: { fontSize: 20, color: COLORS.textPrimary, lineHeight: 24 },
-  monthTitle: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
+  heatmapTitle: {
+    fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold,
+    color: COLORS.textSecondary, textTransform: 'uppercase',
+    letterSpacing: 0.5, marginBottom: SPACING.sm,
+  },
 
-  dayLabels: { flexDirection: 'row', marginBottom: SPACING.sm },
-  dayLabel: { flex: 1, textAlign: 'center', fontSize: FONTS.sizes.xs, color: COLORS.textTertiary, fontWeight: FONTS.weights.medium },
+  // Month labels
+  monthLabelRow: { position: 'relative', height: 16, marginLeft: 24, marginBottom: 2 },
+  monthLabel:    { position: 'absolute', fontSize: 9, color: COLORS.textTertiary },
 
-  grid: { flexDirection: 'row', flexWrap: 'wrap' },
+  // Heatmap body
+  heatmapBody: { flexDirection: 'row' },
+  dayLabelCol:  { width: 24, flexDirection: 'column', gap: CELL_GAP, paddingTop: 1 },
+  dayLabel:     { height: CELL, fontSize: 8, color: COLORS.textTertiary, textAlignVertical: 'center' },
+
+  // Cells
   cell: {
-    width: `${100 / 7}%`, aspectRatio: 1,
-    alignItems: 'center', justifyContent: 'center',
-    marginBottom: 2,
+    width: CELL, height: CELL,
+    borderRadius: 2,
+    backgroundColor: COLORS.surface,
   },
-  cellLogged: { backgroundColor: COLORS.black, borderRadius: RADIUS.sm },
-  cellToday: { borderWidth: 2, borderColor: COLORS.black, borderRadius: RADIUS.sm },
-  cellFuture: { opacity: 0.2 },
+  cellToday: {
+    borderWidth: 1.5,
+    borderColor: COLORS.black,
+  },
+  cellOutOfRange: {
+    backgroundColor: 'transparent',
+  },
 
-  cellText: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary },
-  cellTextLogged: { color: COLORS.white, fontWeight: FONTS.weights.bold },
-  cellTextToday: { color: COLORS.black, fontWeight: FONTS.weights.bold },
-  cellTextFuture: { color: COLORS.textTertiary },
+  // Legend
+  legend: {
+    flexDirection: 'row', alignItems: 'center',
+    gap: 3, marginTop: SPACING.sm, justifyContent: 'flex-end',
+  },
+  legendCell:  { width: CELL, height: CELL, borderRadius: 2 },
+  legendLabel: { fontSize: 9, color: COLORS.textTertiary },
 
-  legend: { flexDirection: 'row', gap: SPACING.md, marginTop: SPACING.md, justifyContent: 'center' },
-  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  legendDot: { width: 16, height: 16, borderRadius: 4 },
-  legendLabel: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary },
+  // Tooltip
+  tooltip: {
+    marginTop: SPACING.sm,
+    backgroundColor: COLORS.black,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+  },
+  tooltipDate:    { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.bold, color: COLORS.white, marginBottom: 2 },
+  tooltipValue:   { fontSize: FONTS.sizes.sm, color: COLORS.textOnDark },
+  tooltipEmpty:   { fontSize: FONTS.sizes.sm, color: '#9AA0A6' },
+  tooltipDismiss: { fontSize: 10, color: '#5F6368', marginTop: 6, textAlign: 'right' },
 
+  // Year card
+  yearCard: {
+    borderWidth: 1.5, borderColor: COLORS.borderLight,
+    borderRadius: RADIUS.md, padding: SPACING.md,
+    marginBottom: SPACING.lg,
+  },
+  yearTitle: {
+    fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold,
+    color: COLORS.textSecondary, textTransform: 'uppercase',
+    letterSpacing: 0.5, marginBottom: SPACING.md,
+  },
+  yearStats:     { flexDirection: 'row', justifyContent: 'space-between' },
+  yearStat:      { alignItems: 'center', flex: 1 },
+  yearStatValue: { fontSize: FONTS.sizes.lg, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
+  yearStatLabel: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, marginTop: 2, textAlign: 'center' },
+
+  // Banner
   banner: {
     flexDirection: 'row', alignItems: 'center', gap: SPACING.md,
     borderWidth: 1.5, borderColor: COLORS.borderLight,
@@ -241,5 +397,5 @@ const styles = StyleSheet.create({
   },
   bannerEmoji: { fontSize: 36 },
   bannerTitle: { fontSize: FONTS.sizes.md, fontWeight: FONTS.weights.bold, color: COLORS.textPrimary },
-  bannerSub: { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginTop: 2 },
+  bannerSub:   { fontSize: FONTS.sizes.sm, color: COLORS.textSecondary, marginTop: 2 },
 });
