@@ -1,27 +1,26 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useFocusEffect } from 'expo-router';
+import React, { useCallback, useState } from 'react';
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
+  Linking,
+  Platform,
   ScrollView,
   StyleSheet,
   Switch,
-  Alert,
-  ActivityIndicator,
-  Linking,
-  Platform,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
-import { useFocusEffect } from 'expo-router';
-import { COLORS, FONTS, SPACING, RADIUS } from '../../src/constants/theme';
-import { getSettings, saveSettings, DEFAULT_SETTINGS } from '../../src/utils/storage';
+import { COLORS, FONTS, RADIUS, SPACING } from '../../src/constants/theme';
+import { AppSettings } from '../../src/types';
 import { testGitHubConnection } from '../../src/utils/github';
 import {
-  requestNotificationPermission,
-  scheduleDailyReminder,
-  cancelAllNotifications,
+  getScheduledNotifications,
+  setupNotificationsFromSettings
 } from '../../src/utils/notifications';
-import { AppSettings } from '../../src/types';
+import { DEFAULT_SETTINGS, getSettings, saveSettings } from '../../src/utils/storage';
 
 type GitHubStatus = 'idle' | 'testing' | 'ok' | 'fail';
 
@@ -32,6 +31,11 @@ export default function SettingsScreen() {
   // Separate local state for sensitive field — only commit on save
   const [tokenInput, setTokenInput] = useState('');
   const [tokenVisible, setTokenVisible] = useState(false);
+
+  // Notification status state
+  type NotifStatus = 'idle' | 'checking' | 'ok' | 'denied' | 'disabled' | 'error';
+  const [notifStatus, setNotifStatus] = useState<NotifStatus>('idle');
+  const [scheduledCount, setScheduledCount] = useState<number | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -56,23 +60,27 @@ export default function SettingsScreen() {
       const toSave: AppSettings = { ...settings, githubToken: tokenInput };
       await saveSettings(toSave);
 
-      // Re-schedule or cancel notifications based on new settings
-      if (toSave.notificationsEnabled) {
-        const granted = await requestNotificationPermission();
-        if (granted) {
-          await scheduleDailyReminder(toSave.notificationTime);
-        } else {
-          Alert.alert(
-            'Notifications blocked',
-            'Please enable notifications for LearnStreak in your phone Settings.',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Open Settings', onPress: () => Linking.openSettings() },
-            ]
-          );
-        }
-      } else {
-        await cancelAllNotifications();
+      // Re-schedule using the unified setup function which returns structured result
+      const result = await setupNotificationsFromSettings();
+
+      if (result.ok) {
+        setNotifStatus('ok');
+        setScheduledCount(result.scheduled);
+      } else if (result.reason === 'permission_denied') {
+        setNotifStatus('denied');
+        // Offer to open OS settings — user previously denied the permission prompt
+        Alert.alert(
+          '🔔 Notifications blocked',
+          'LearnStreak needs notification permission. Open your phone Settings to enable it.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            { text: 'Open Settings', onPress: () => Linking.openSettings() },
+          ]
+        );
+      } else if (result.reason === 'disabled') {
+        setNotifStatus('disabled');
+      } else if (result.reason !== 'web') {
+        setNotifStatus('error');
       }
 
       Alert.alert('✅ Saved', 'Settings updated successfully.');
@@ -80,6 +88,26 @@ export default function SettingsScreen() {
       Alert.alert('Error', 'Could not save settings. Please try again.');
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Check what is currently scheduled — lets user verify without saving
+  async function handleCheckScheduled() {
+    setNotifStatus('checking');
+    const scheduled = await getScheduledNotifications();
+    setScheduledCount(scheduled.length);
+    setNotifStatus(scheduled.length > 0 ? 'ok' : 'error');
+  }
+
+  // Deep-link to Android battery optimisation exemption screen
+  // Without this, Android may kill the notification process before it fires
+  async function handleBatteryOptimisation() {
+    if (Platform.OS !== 'android') return;
+    try {
+      await Linking.openURL('package:com.nick.learnstreak');
+    } catch {
+      // Fallback to general battery settings
+      await Linking.openSettings();
     }
   }
 
@@ -149,6 +177,8 @@ export default function SettingsScreen() {
       {/* ── Notifications ───────────────────────────────────────── */}
       <SectionHeader emoji="🔔" title="Notifications" />
       <View style={styles.card}>
+
+        {/* Toggle */}
         <View style={styles.switchRow}>
           <View style={styles.switchLabel}>
             <Text style={styles.switchTitle}>Daily reminder</Text>
@@ -165,6 +195,8 @@ export default function SettingsScreen() {
         {settings.notificationsEnabled && (
           <>
             <Divider />
+
+            {/* Time picker */}
             <FieldLabel>Reminder time (24h format)</FieldLabel>
             <View style={styles.timeRow}>
               <TextInput
@@ -181,18 +213,10 @@ export default function SettingsScreen() {
                 {['08:00', '13:00', '20:00', '22:00'].map((t) => (
                   <TouchableOpacity
                     key={t}
-                    style={[
-                      styles.timeChip,
-                      settings.notificationTime === t && styles.timeChipActive,
-                    ]}
+                    style={[styles.timeChip, settings.notificationTime === t && styles.timeChipActive]}
                     onPress={() => update({ notificationTime: t })}
                   >
-                    <Text
-                      style={[
-                        styles.timeChipText,
-                        settings.notificationTime === t && styles.timeChipTextActive,
-                      ]}
-                    >
+                    <Text style={[styles.timeChipText, settings.notificationTime === t && styles.timeChipTextActive]}>
                       {t}
                     </Text>
                   </TouchableOpacity>
@@ -200,8 +224,62 @@ export default function SettingsScreen() {
               </View>
             </View>
             <FieldHint>
-              A streak-at-risk alert also fires at 23:30 if you haven't logged by then.
+              A streak-at-risk alert also fires at 23:30 every night.
             </FieldHint>
+
+            <Divider />
+
+            {/* Status panel — shows whether notifications are actually scheduled */}
+            <View style={styles.notifStatusRow}>
+              <View style={styles.notifStatusLeft}>
+                <Text style={styles.notifStatusTitle}>Scheduled status</Text>
+                <Text style={styles.notifStatusSub}>
+                  {notifStatus === 'idle'     && 'Save settings to schedule notifications.'}
+                  {notifStatus === 'checking' && 'Checking...'}
+                  {notifStatus === 'ok'       && `✅ ${scheduledCount} notification${scheduledCount !== 1 ? 's' : ''} scheduled`}
+                  {notifStatus === 'denied'   && '❌ Permission denied — tap Open Settings below'}
+                  {notifStatus === 'disabled' && '⏸ Notifications are turned off'}
+                  {notifStatus === 'error'    && '⚠️ No notifications scheduled — try saving again'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.checkBtn}
+                onPress={handleCheckScheduled}
+                disabled={notifStatus === 'checking'}
+              >
+                <Text style={styles.checkBtnText}>Check</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Permission denied — open OS settings */}
+            {notifStatus === 'denied' && (
+              <TouchableOpacity
+                style={styles.openSettingsBtn}
+                onPress={() => Linking.openSettings()}
+              >
+                <Text style={styles.openSettingsBtnText}>Open phone Settings →</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Android battery optimisation warning */}
+            {Platform.OS === 'android' && (
+              <>
+                <Divider />
+                <View style={styles.batteryWarning}>
+                  <Text style={styles.batteryWarningTitle}>⚡ Not getting notifications?</Text>
+                  <Text style={styles.batteryWarningSub}>
+                    Android battery optimisation can kill background processes and block
+                    scheduled notifications. Exempt LearnStreak to fix this.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.batteryBtn}
+                    onPress={handleBatteryOptimisation}
+                  >
+                    <Text style={styles.batteryBtnText}>Disable battery optimisation →</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
           </>
         )}
       </View>
@@ -556,4 +634,48 @@ const styles = StyleSheet.create({
     fontSize: FONTS.sizes.md,
     fontWeight: FONTS.weights.bold,
   },
+
+  // Notification status panel
+  notifStatusRow: {
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'space-between', gap: SPACING.sm,
+    marginTop: SPACING.xs,
+  },
+  notifStatusLeft: { flex: 1 },
+  notifStatusTitle: {
+    fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold,
+    color: COLORS.textPrimary, marginBottom: 2,
+  },
+  notifStatusSub: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary, lineHeight: 16 },
+  checkBtn: {
+    borderWidth: 1.5, borderColor: COLORS.borderLight,
+    borderRadius: RADIUS.md, paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm, backgroundColor: COLORS.offWhite,
+  },
+  checkBtnText: { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.medium, color: COLORS.textSecondary },
+
+  // Open settings link
+  openSettingsBtn: {
+    marginTop: SPACING.sm, alignSelf: 'flex-start',
+    paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
+    borderWidth: 1, borderColor: COLORS.accent, borderRadius: RADIUS.sm,
+  },
+  openSettingsBtnText: { fontSize: FONTS.sizes.sm, color: COLORS.accent, fontWeight: FONTS.weights.medium },
+
+  // Battery optimisation
+  batteryWarning: { marginTop: SPACING.xs },
+  batteryWarningTitle: {
+    fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold,
+    color: COLORS.textPrimary, marginBottom: 4,
+  },
+  batteryWarningSub: {
+    fontSize: FONTS.sizes.xs, color: COLORS.textSecondary,
+    lineHeight: 16, marginBottom: SPACING.sm,
+  },
+  batteryBtn: {
+    alignSelf: 'flex-start', borderWidth: 1.5,
+    borderColor: COLORS.warning, borderRadius: RADIUS.sm,
+    paddingHorizontal: SPACING.md, paddingVertical: SPACING.sm,
+  },
+  batteryBtnText: { fontSize: FONTS.sizes.sm, color: COLORS.warning, fontWeight: FONTS.weights.medium },
 });
