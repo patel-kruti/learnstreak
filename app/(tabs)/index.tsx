@@ -56,22 +56,24 @@ export default function AddScreen() {
   const [todaySessions, setTodaySessions] = useState<LearningEntry[]>([]);
 
   useFocusEffect(useCallback(() => {
+    // Run both on every focus — this fires even when navigating between tabs
+    // because tab screens stay mounted (useFocusEffect fires on every re-focus)
     loadTodaySessions();
-    checkPendingEdit();
-  }, []));
 
-  async function checkPendingEdit() {
-    const pending = await getPendingEdit();
-    if (!pending) return;
-    await clearPendingEdit();
-    // Pre-fill form with the session from History tab
-    setEditingEntry(pending);
-    setSelectedCategory(pending.category);
-    setTitle(pending.title);
-    setDescription(pending.description);
-    setDuration(String(pending.duration));
-    scrollRef.current?.scrollTo({ y: 0, animated: false });
-  }
+    // Check if History tab left a pending edit for us
+    getPendingEdit().then((pending) => {
+      if (!pending) return;
+      clearPendingEdit();
+      setEditingEntry(pending);
+      setSelectedCategory(pending.category);
+      setTitle(pending.title);
+      setDescription(pending.description);
+      setDuration(String(pending.duration));
+      // Small delay so layout is ready before scrolling
+      setTimeout(() => scrollRef.current?.scrollTo({ y: 0, animated: true }), 100);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []));
 
   async function loadTodaySessions() {
     const entries = await getEntriesForDate(today);

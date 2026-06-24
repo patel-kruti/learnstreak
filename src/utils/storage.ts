@@ -1,12 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { AppSettings, Category, CategoryStat, DaySummary, EarnedBadge, LearningEntry, StreakData } from '../types';
+import { AppSettings, Category, CategoryStat, DaySummary, EarnedBadge, LearningEntry, StreakData, StreakFreezeData } from '../types';
 
 const KEYS = {
   ENTRIES: 'learnstreak:entries',
   STREAK:  'learnstreak:streak',
   SETTINGS:'learnstreak:settings',
   BADGES:  'learnstreak:badges',
+  FREEZES: 'learnstreak:freezes',
 };
+
+const MAX_FREEZES = 3;
 
 // ── Entries ───────────────────────────────────────────────────────────────────
 
@@ -121,6 +124,29 @@ export async function getCategoryStats(
 // ── Streak ────────────────────────────────────────────────────────────────────
 // Streak logic is unchanged — a "day" counts as logged if ANY entry exists for it.
 
+// ── Streak freeze ─────────────────────────────────────────────────────────────
+
+export const DEFAULT_FREEZE_DATA: StreakFreezeData = {
+  freezesAvailable: 0,
+  frozenDates: [],
+};
+
+export async function getFreezeData(): Promise<StreakFreezeData> {
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.FREEZES);
+    if (!raw) return { ...DEFAULT_FREEZE_DATA };
+    return { ...DEFAULT_FREEZE_DATA, ...JSON.parse(raw) };
+  } catch {
+    return { ...DEFAULT_FREEZE_DATA };
+  }
+}
+
+async function saveFreezeData(data: StreakFreezeData): Promise<void> {
+  await AsyncStorage.setItem(KEYS.FREEZES, JSON.stringify(data));
+}
+
+// ── Streak ────────────────────────────────────────────────────────────────────
+
 export const DEFAULT_STREAK: StreakData = {
   currentStreak: 0,
   longestStreak: 0,
@@ -142,22 +168,49 @@ export async function getStreak(): Promise<StreakData> {
 // If the user logs a second session on the same day, don't call this again
 // (streak.lastLoggedDate === todayDate guard handles it).
 export async function updateStreak(todayDate: string): Promise<StreakData> {
-  const streak = await getStreak();
+  const [streak, freezeData] = await Promise.all([getStreak(), getFreezeData()]);
   const yesterday = getPreviousDate(todayDate);
 
   // Already counted today — adding more sessions doesn't change the streak
   if (streak.lastLoggedDate === todayDate) return streak;
 
+  const prevStreakCount = streak.currentStreak;
   let newStreak: StreakData;
+
   if (streak.lastLoggedDate === yesterday) {
+    // Consecutive day
     newStreak = {
       currentStreak:  streak.currentStreak + 1,
       longestStreak:  Math.max(streak.longestStreak, streak.currentStreak + 1),
       lastLoggedDate: todayDate,
       totalDaysLogged: streak.totalDaysLogged + 1,
     };
+  } else if (streak.lastLoggedDate !== null) {
+    // Gap detected — try to bridge with available freezes
+    const missedDays = daysBetween(streak.lastLoggedDate, todayDate) - 1;
+    if (missedDays > 0 && missedDays <= freezeData.freezesAvailable) {
+      for (let i = 1; i <= missedDays; i++) {
+        const fd = addDays(streak.lastLoggedDate, i);
+        if (!freezeData.frozenDates.includes(fd)) freezeData.frozenDates.push(fd);
+      }
+      freezeData.freezesAvailable -= missedDays;
+      newStreak = {
+        currentStreak:  streak.currentStreak + 1,
+        longestStreak:  Math.max(streak.longestStreak, streak.currentStreak + 1),
+        lastLoggedDate: todayDate,
+        totalDaysLogged: streak.totalDaysLogged + 1,
+      };
+    } else {
+      // Too many days missed or no freezes — streak resets
+      newStreak = {
+        currentStreak:  1,
+        longestStreak:  Math.max(streak.longestStreak, 1),
+        lastLoggedDate: todayDate,
+        totalDaysLogged: streak.totalDaysLogged + 1,
+      };
+    }
   } else {
-    // Gap in days — streak resets to 1
+    // First ever entry
     newStreak = {
       currentStreak:  1,
       longestStreak:  Math.max(streak.longestStreak, 1),
@@ -166,7 +219,18 @@ export async function updateStreak(todayDate: string): Promise<StreakData> {
     };
   }
 
-  await AsyncStorage.setItem(KEYS.STREAK, JSON.stringify(newStreak));
+  // Award a freeze at each 7-day streak milestone (up to MAX_FREEZES)
+  if (
+    Math.floor(newStreak.currentStreak / 7) > Math.floor(prevStreakCount / 7) &&
+    freezeData.freezesAvailable < MAX_FREEZES
+  ) {
+    freezeData.freezesAvailable++;
+  }
+
+  await Promise.all([
+    AsyncStorage.setItem(KEYS.STREAK, JSON.stringify(newStreak)),
+    saveFreezeData(freezeData),
+  ]);
   return newStreak;
 }
 
@@ -175,25 +239,25 @@ export async function updateStreak(todayDate: string): Promise<StreakData> {
 // streak counter may now be wrong (it counted that day), so we rebuild it
 // by walking every logged date in chronological order.
 export async function recalculateStreakAfterDeletion(): Promise<StreakData> {
-  const entries = await getAllEntries();
+  const [entries, freezeData] = await Promise.all([getAllEntries(), getFreezeData()]);
 
-  // Collect unique logged dates, sorted oldest-first
-  const dates = [...new Set(entries.map((e) => e.date))].sort();
+  const entryDates = [...new Set(entries.map((e) => e.date))];
 
-  if (dates.length === 0) {
+  if (entryDates.length === 0) {
     const reset = DEFAULT_STREAK;
     await AsyncStorage.setItem(KEYS.STREAK, JSON.stringify(reset));
     return reset;
   }
 
-  // Walk dates to find current streak (must end on today or yesterday to be active)
-  let currentStreak = 1;
+  // Merge real entry dates with frozen dates for the streak walk
+  const allDates = [...new Set([...entryDates, ...freezeData.frozenDates])].sort();
+
   let longestStreak = 1;
   let tempStreak    = 1;
 
-  for (let i = 1; i < dates.length; i++) {
-    const prev = new Date(dates[i - 1] + 'T12:00:00');
-    const curr = new Date(dates[i]     + 'T12:00:00');
+  for (let i = 1; i < allDates.length; i++) {
+    const prev = new Date(allDates[i - 1] + 'T12:00:00');
+    const curr = new Date(allDates[i]     + 'T12:00:00');
     const diffDays = Math.round((curr.getTime() - prev.getTime()) / 86400000);
 
     if (diffDays === 1) {
@@ -205,17 +269,17 @@ export async function recalculateStreakAfterDeletion(): Promise<StreakData> {
   }
   longestStreak = Math.max(longestStreak, tempStreak);
 
-  // Current streak is only active if the last logged date is today or yesterday
+  // Current streak is only active if the last date is today or yesterday
   const today     = getTodayDate();
   const yesterday = getPreviousDate(today);
-  const lastDate  = dates[dates.length - 1];
-  currentStreak   = (lastDate === today || lastDate === yesterday) ? tempStreak : 0;
+  const lastDate  = allDates[allDates.length - 1];
+  const currentStreak = (lastDate === today || lastDate === yesterday) ? tempStreak : 0;
 
   const newStreak: StreakData = {
     currentStreak,
     longestStreak,
     lastLoggedDate:  lastDate,
-    totalDaysLogged: dates.length,
+    totalDaysLogged: entryDates.length, // frozen days don't count as logged days
   };
 
   await AsyncStorage.setItem(KEYS.STREAK, JSON.stringify(newStreak));
@@ -281,6 +345,30 @@ export async function checkAndAwardBadges(streak: StreakData): Promise<string[]>
   return newlyEarned;
 }
 
+// ── Pending edit handoff ─────────────────────────────────────────────────────
+// Used when the History tab wants to edit a past session.
+// It stores the entry here, navigates to the Add tab, which reads and clears it.
+
+const PENDING_EDIT_KEY = 'learnstreak:pendingEdit';
+
+export async function setPendingEdit(entry: LearningEntry): Promise<void> {
+  await AsyncStorage.setItem(PENDING_EDIT_KEY, JSON.stringify(entry));
+}
+
+export async function getPendingEdit(): Promise<LearningEntry | null> {
+  try {
+    const raw = await AsyncStorage.getItem(PENDING_EDIT_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export async function clearPendingEdit(): Promise<void> {
+  await AsyncStorage.removeItem(PENDING_EDIT_KEY);
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export function getTodayDate(): string {
@@ -311,4 +399,16 @@ export function formatMinutes(minutes: number): string {
 
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function addDays(date: string, days: number): string {
+  const d = new Date(date + 'T12:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split('T')[0];
+}
+
+function daysBetween(dateA: string, dateB: string): number {
+  const a = new Date(dateA + 'T12:00:00');
+  const b = new Date(dateB + 'T12:00:00');
+  return Math.round(Math.abs(b.getTime() - a.getTime()) / 86400000);
 }

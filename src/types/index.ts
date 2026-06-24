@@ -71,3 +71,8 @@ export interface AppSettings {
   githubRepo: string; // "username/repo"
   userName: string;
 }
+
+export interface StreakFreezeData {
+  freezesAvailable: number; // 0–3
+  frozenDates: string[];    // YYYY-MM-DD dates protected by a freeze
+}

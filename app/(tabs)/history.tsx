@@ -127,10 +127,10 @@ export default function HistoryScreen() {
   });
 
   async function handleEditSession(session: LearningEntry) {
-    // Store the session to edit in AsyncStorage, then navigate to Add tab.
-    // The Add tab reads this on focus and pre-fills the form.
     await setPendingEdit(session);
-    router.navigate('/(tabs)/');
+    // Use push to the index tab — navigate() can silently fail on some
+    // Expo Router versions when the target is already in the tab stack
+    router.push('/');
   }
 
   const today      = getTodayDate();

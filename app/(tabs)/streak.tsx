@@ -9,8 +9,8 @@ import {
   View,
 } from 'react-native';
 import { COLORS, FONTS, RADIUS, SPACING } from '../../src/constants/theme';
-import { DaySummary, StreakData } from '../../src/types';
-import { getDaySummaries, getStreak, getTodayDate } from '../../src/utils/storage';
+import { DaySummary, StreakData, StreakFreezeData } from '../../src/types';
+import { DEFAULT_FREEZE_DATA, getFreezeData, getDaySummaries, getStreak, getTodayDate } from '../../src/utils/storage';
 
 const SCREEN_W  = Dimensions.get('window').width;
 const CELL      = 13;  // px — each day square
@@ -22,8 +22,11 @@ const DAYS_BACK = NUM_WEEKS * 7; // 364 days
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const DAY_LABELS   = ['', 'Mon', '', 'Wed', '', 'Fri', ''];
 
+const FREEZE_COLOR = '#7EC8E3'; // ice blue
+
 // Intensity levels → opacity of black fill (GitHub-style 4 levels + empty)
-function intensityColor(minutes: number, maxMinutes: number): string {
+function cellBg(minutes: number, maxMinutes: number, isFrozen: boolean): string {
+  if (isFrozen && minutes === 0) return FREEZE_COLOR;
   if (minutes === 0 || maxMinutes === 0) return COLORS.surface;
   const ratio = minutes / maxMinutes;
   if (ratio < 0.25) return '#C6E6C6'; // light green — low
@@ -37,6 +40,7 @@ function intensityColor(minutes: number, maxMinutes: number): string {
 export default function StreakScreen() {
   const [daySummaries, setDaySummaries] = useState<DaySummary[]>([]);
   const [streak, setStreak]             = useState<StreakData | null>(null);
+  const [freezeData, setFreezeData]     = useState<StreakFreezeData>(DEFAULT_FREEZE_DATA);
   const [selectedDay, setSelectedDay]   = useState<DaySummary | null>(null);
 
   useFocusEffect(
@@ -48,16 +52,19 @@ export default function StreakScreen() {
   async function loadData() {
     const today   = getTodayDate();
     const fromDate = offsetDate(today, -DAYS_BACK);
-    const [days, s] = await Promise.all([
+    const [days, s, fd] = await Promise.all([
       getDaySummaries(fromDate, today),
       getStreak(),
+      getFreezeData(),
     ]);
     setDaySummaries(days);
     setStreak(s);
+    setFreezeData(fd);
   }
 
-  // Build lookup map: date → DaySummary
+  // Build lookup maps
   const summaryMap = new Map(daySummaries.map((d) => [d.date, d]));
+  const frozenSet  = new Set(freezeData.frozenDates);
   const maxMinutes = Math.max(...daySummaries.map((d) => d.totalMinutes), 1);
 
   // Build 52-week grid: array of 7-day columns, oldest week first
@@ -119,6 +126,9 @@ export default function StreakScreen() {
         <StatBox label="This month"   value={String(thisMonthDays)} />
       </View>
 
+      {/* ── Streak Freeze card ───────────────────────────────────────────── */}
+      <FreezeCard freezeData={freezeData} />
+
       {/* ── Heatmap ──────────────────────────────────────────────────────── */}
       <View style={styles.heatmapCard}>
         <Text style={styles.heatmapTitle}>Last 52 weeks</Text>
@@ -155,12 +165,13 @@ export default function StreakScreen() {
                 {columns.map((col, ci) => (
                   <View key={ci} style={{ flexDirection: 'column', gap: CELL_GAP }}>
                     {col.map(({ date, inRange }) => {
-                      const summary = summaryMap.get(date);
-                      const mins    = summary?.totalMinutes ?? 0;
-                      const isToday = date === today;
-                      const bg      = !inRange
+                      const summary  = summaryMap.get(date);
+                      const mins     = summary?.totalMinutes ?? 0;
+                      const isToday  = date === today;
+                      const isFrozen = frozenSet.has(date) && mins === 0;
+                      const bg       = !inRange
                         ? 'transparent'
-                        : intensityColor(mins, maxMinutes);
+                        : cellBg(mins, maxMinutes, isFrozen);
 
                       return (
                         <TouchableOpacity
@@ -187,7 +198,7 @@ export default function StreakScreen() {
               {[0, 0.2, 0.5, 0.75, 1].map((ratio) => (
                 <View
                   key={ratio}
-                  style={[styles.legendCell, { backgroundColor: intensityColor(ratio * 60, 60) }]}
+                  style={[styles.legendCell, { backgroundColor: cellBg(ratio * 60, 60, false) }]}
                 />
               ))}
               <Text style={styles.legendLabel}>More</Text>
@@ -204,11 +215,11 @@ export default function StreakScreen() {
           >
             <Text style={styles.tooltipDate}>{formatTooltipDate(selectedDay.date)}</Text>
             {selectedDay.totalMinutes > 0 ? (
-              <>
-                <Text style={styles.tooltipValue}>
-                  {formatMinutes(selectedDay.totalMinutes)} across {selectedDay.entryCount} session{selectedDay.entryCount !== 1 ? 's' : ''}
-                </Text>
-              </>
+              <Text style={styles.tooltipValue}>
+                {formatMinutes(selectedDay.totalMinutes)} across {selectedDay.entryCount} session{selectedDay.entryCount !== 1 ? 's' : ''}
+              </Text>
+            ) : frozenSet.has(selectedDay.date) ? (
+              <Text style={styles.tooltipFrozen}>🧊 Streak freeze used — day protected</Text>
             ) : (
               <Text style={styles.tooltipEmpty}>No sessions logged</Text>
             )}
@@ -236,6 +247,37 @@ export default function StreakScreen() {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+function FreezeCard({ freezeData }: { freezeData: StreakFreezeData }) {
+  const { freezesAvailable } = freezeData;
+
+  return (
+    <View style={styles.freezeCard}>
+      <View style={styles.freezeHeader}>
+        <Text style={styles.freezeTitle}>🧊 Streak Freeze</Text>
+        <Text style={styles.freezeCount}>{freezesAvailable} / {MAX_FREEZES_UI} available</Text>
+      </View>
+
+      {/* Freeze slots */}
+      <View style={styles.freezeSlots}>
+        {Array.from({ length: MAX_FREEZES_UI }).map((_, i) => (
+          <View
+            key={i}
+            style={[styles.freezeSlot, i < freezesAvailable && styles.freezeSlotFilled]}
+          >
+            <Text style={styles.freezeSlotIcon}>{i < freezesAvailable ? '🧊' : '○'}</Text>
+          </View>
+        ))}
+      </View>
+
+      <Text style={styles.freezeHint}>
+        Earned every 7 days · auto-applied when you miss up to 3 days
+      </Text>
+    </View>
+  );
+}
+
+const MAX_FREEZES_UI = 3;
 
 function StatBox({ label, value, mid }: { label: string; value: string; mid?: boolean }) {
   return (
@@ -360,6 +402,35 @@ const styles = StyleSheet.create({
   legendCell:  { width: CELL, height: CELL, borderRadius: 2 },
   legendLabel: { fontSize: 9, color: COLORS.textTertiary },
 
+  // Freeze card
+  freezeCard: {
+    borderWidth: 1.5, borderColor: '#B3DFF0',
+    borderRadius: RADIUS.md, padding: SPACING.md,
+    marginBottom: SPACING.lg, backgroundColor: '#EAF7FC',
+  },
+  freezeHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    marginBottom: SPACING.sm,
+  },
+  freezeTitle: {
+    fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.semibold,
+    color: '#1a6a8a',
+  },
+  freezeCount: {
+    fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.bold, color: '#1a6a8a',
+  },
+  freezeSlots: { flexDirection: 'row', gap: SPACING.sm, marginBottom: SPACING.sm },
+  freezeSlot: {
+    flex: 1, alignItems: 'center', paddingVertical: SPACING.sm,
+    borderWidth: 1.5, borderColor: '#B3DFF0',
+    borderRadius: RADIUS.sm, backgroundColor: COLORS.white,
+  },
+  freezeSlotFilled: { backgroundColor: '#D6F0FA', borderColor: '#7EC8E3' },
+  freezeSlotIcon: { fontSize: 20 },
+  freezeHint: {
+    fontSize: FONTS.sizes.xs, color: '#4a8ea8', textAlign: 'center',
+  },
+
   // Tooltip
   tooltip: {
     marginTop: SPACING.sm,
@@ -369,6 +440,7 @@ const styles = StyleSheet.create({
   },
   tooltipDate:    { fontSize: FONTS.sizes.sm, fontWeight: FONTS.weights.bold, color: COLORS.white, marginBottom: 2 },
   tooltipValue:   { fontSize: FONTS.sizes.sm, color: COLORS.textOnDark },
+  tooltipFrozen:  { fontSize: FONTS.sizes.sm, color: '#7EC8E3' },
   tooltipEmpty:   { fontSize: FONTS.sizes.sm, color: '#9AA0A6' },
   tooltipDismiss: { fontSize: 10, color: '#5F6368', marginTop: 6, textAlign: 'right' },
 

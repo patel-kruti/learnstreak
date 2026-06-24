@@ -205,7 +205,7 @@ function LineChart({ data }: { data: DaySummary[] }) {
         {/* Horizontal gridlines */}
         {yLabels.map(({ value, y }) => (
           <View
-            key={value}
+            key={`grid-${value}`}
             style={[styles.gridLine, { top: y - CHART_PADDING.top + CHART_PADDING.top, width: plotW + CHART_PADDING.right }]}
           />
         ))}
@@ -220,7 +220,7 @@ function LineChart({ data }: { data: DaySummary[] }) {
             const angle = Math.atan2(dy, dx) * (180 / Math.PI);
             return (
               <View
-                key={i}
+                key={`line-${i}`}
                 style={{
                   position: 'absolute',
                   left: p.x - CHART_PADDING.left,
@@ -238,7 +238,7 @@ function LineChart({ data }: { data: DaySummary[] }) {
         {/* Data point dots */}
         {points.map((p, i) => (
           <View
-            key={i}
+            key={`dot-${i}`}
             style={[
               styles.chartDot,
               {
