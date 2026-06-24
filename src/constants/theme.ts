@@ -39,6 +39,7 @@ export const COLORS = {
     math: '#AB47BC',
     science: '#00ACC1',
     design: '#FB8C00',
+    sports: '#FBC02D',
     other: '#757575',
   },
 
@@ -142,5 +143,6 @@ export const CATEGORIES = [
   { id: 'math', label: 'Math', emoji: '🔢' },
   { id: 'science', label: 'Science', emoji: '🔬' },
   { id: 'design', label: 'Design', emoji: '🎨' },
+  { id: 'sports', label: 'Sports', emoji: '🏅' },
   { id: 'other', label: 'Other', emoji: '✨' },
 ];
