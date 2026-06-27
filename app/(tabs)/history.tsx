@@ -11,11 +11,12 @@ import {
   View,
 } from 'react-native';
 import { CATEGORIES, COLORS, FONTS, RADIUS, SPACING } from '../../src/constants/theme';
-import { LearningEntry } from '../../src/types';
+import { CustomCategory, LearningEntry } from '../../src/types';
 import {
   deleteEntry,
   formatMinutes,
   getAllEntries,
+  getCustomCategories,
   getEntriesForDate,
   getTodayDate,
   recalculateStreakAfterDeletion,
@@ -85,17 +86,25 @@ async function confirmDelete(message: string): Promise<boolean> {
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function HistoryScreen() {
-  const [entries, setEntries]         = useState<LearningEntry[]>([]);
-  const [search, setSearch]           = useState('');
+  const [entries, setEntries]           = useState<LearningEntry[]>([]);
+  const [search, setSearch]             = useState('');
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
+  const [customCategories, setCustomCategories] = useState<CustomCategory[]>([]);
 
   useFocusEffect(
-    useCallback(() => { loadEntries(); }, [])
+    useCallback(() => {
+      loadEntries();
+      getCustomCategories().then(setCustomCategories);
+    }, [])
   );
 
   async function loadEntries() {
     const all = await getAllEntries();
     setEntries(all);
+  }
+
+  function lookupCat(id: string) {
+    return CATEGORIES.find((c) => c.id === id) ?? customCategories.find((c) => c.id === id);
   }
 
   async function handleDeleteSession(session: LearningEntry) {
@@ -117,7 +126,7 @@ export default function HistoryScreen() {
   const filtered = entries.filter((e) => {
     const q = search.toLowerCase();
     if (!q) return true;
-    const catLabel = CATEGORIES.find((c) => c.id === e.category)?.label ?? '';
+    const catLabel = lookupCat(e.category)?.label ?? '';
     return (
       e.title.toLowerCase().includes(q) ||
       e.description.toLowerCase().includes(q) ||
@@ -143,14 +152,25 @@ export default function HistoryScreen() {
       <Text style={styles.heading}>📋 History</Text>
 
       {/* Search */}
-      <TextInput
-        style={styles.searchInput}
-        value={search}
-        onChangeText={setSearch}
-        placeholder="Search by title, category, date..."
-        placeholderTextColor={COLORS.textTertiary}
-        clearButtonMode="while-editing"
-      />
+      <View style={styles.searchWrap}>
+        <TextInput
+          style={[styles.searchInput, search.length > 0 && styles.searchInputWithClear]}
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search by title, category, date..."
+          placeholderTextColor={COLORS.textTertiary}
+          clearButtonMode="while-editing"
+        />
+        {search.length > 0 && (
+          <TouchableOpacity
+            style={styles.searchClearBtn}
+            onPress={() => setSearch('')}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text style={styles.searchClearIcon}>✕</Text>
+          </TouchableOpacity>
+        )}
+      </View>
 
       {entries.length === 0 ? (
         <EmptyState emoji="📭" text="No entries yet." sub="Go to Add tab to log your first day!" />
@@ -176,6 +196,7 @@ export default function HistoryScreen() {
                 onPress={() => setExpandedDate(expandedDate === day.date ? null : day.date)}
                 onDeleteSession={handleDeleteSession}
                 onEditSession={handleEditSession}
+                customCategories={customCategories}
               />
             ))}
           </View>
@@ -196,6 +217,7 @@ function DayCard({
   onPress,
   onDeleteSession,
   onEditSession,
+  customCategories,
 }: {
   day: DayGroup;
   isToday: boolean;
@@ -203,9 +225,14 @@ function DayCard({
   onPress: () => void;
   onDeleteSession: (s: LearningEntry) => void;
   onEditSession: (s: LearningEntry) => void;
+  customCategories: CustomCategory[];
 }) {
   // Unique categories across sessions for the summary chips
   const uniqueCats = [...new Set(day.sessions.map((s) => s.category))];
+
+  function lookupCat(id: string) {
+    return CATEGORIES.find((c) => c.id === id) ?? customCategories.find((c) => c.id === id);
+  }
 
   return (
     <View style={[styles.dayCard, isToday && styles.dayCardToday]}>
@@ -233,7 +260,7 @@ function DayCard({
           {/* Category chips — collapsed view */}
           <View style={styles.catChips}>
             {uniqueCats.map((cat) => {
-              const catDef = CATEGORIES.find((c) => c.id === cat);
+              const catDef = lookupCat(cat);
               return (
                 <View key={cat} style={styles.miniChip}>
                   <Text style={styles.miniChipText}>{catDef?.emoji} {catDef?.label ?? cat}</Text>
@@ -263,6 +290,7 @@ function DayCard({
               isLast={idx === day.sessions.length - 1}
               onDelete={() => onDeleteSession(session)}
               onEdit={() => onEditSession(session)}
+              customCategories={customCategories}
             />
           ))}
 
@@ -284,13 +312,16 @@ function SessionRow({
   isLast,
   onDelete,
   onEdit,
+  customCategories,
 }: {
   session: LearningEntry;
   isLast: boolean;
   onDelete: () => void;
   onEdit: () => void;
+  customCategories: CustomCategory[];
 }) {
-  const catDef = CATEGORIES.find((c) => c.id === session.category);
+  const catDef = CATEGORIES.find((c) => c.id === session.category)
+    ?? customCategories.find((c) => c.id === session.category);
 
   return (
     <View style={[styles.sessionRow, !isLast && styles.sessionRowBorder]}>
@@ -350,12 +381,16 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary, marginBottom: SPACING.md,
   },
 
+  searchWrap:           { position: 'relative', marginBottom: SPACING.md },
   searchInput: {
     borderWidth: 1.5, borderColor: COLORS.borderLight,
     borderRadius: RADIUS.md, padding: SPACING.md,
     fontSize: FONTS.sizes.md, color: COLORS.textPrimary,
-    backgroundColor: COLORS.offWhite, marginBottom: SPACING.md,
+    backgroundColor: COLORS.offWhite,
   },
+  searchInputWithClear: { paddingRight: 52 },
+  searchClearBtn:       { position: 'absolute', right: SPACING.sm, top: '50%' as any, marginTop: -18, width: 36, height: 36, borderRadius: 999, backgroundColor: COLORS.surface, borderWidth: 1.5, borderColor: COLORS.borderLight, alignItems: 'center', justifyContent: 'center' },
+  searchClearIcon:      { fontSize: 13, color: COLORS.textSecondary, fontWeight: '600' as const },
 
   // Month section
   monthHeader: {

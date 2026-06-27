@@ -176,6 +176,12 @@ export default function VoiceInput({
   }
 
   const voiceAvailable = !!SpeechModule;
+  const showClear = value.length > 0 && editable;
+
+  // Compute right padding based on which buttons are actually visible.
+  const btnSlot  = 36 + SPACING.xs; // one button width + gap
+  const btnCount = (voiceAvailable ? 1 : 0) + (showClear ? 1 : 0);
+  const rightPad = btnCount > 0 ? SPACING.sm + btnCount * btnSlot : SPACING.md;
 
   return (
     <View style={[styles.container, style]}>
@@ -184,7 +190,7 @@ export default function VoiceInput({
           styles.input,
           multiline && styles.multiline,
           multiline && { minHeight: numberOfLines * 24 + SPACING.md * 2 },
-          voiceAvailable && styles.inputWithMic,
+          { paddingRight: rightPad },
           inputStyle,
         ]}
         value={value}
@@ -199,30 +205,38 @@ export default function VoiceInput({
         editable={editable}
       />
 
-      {voiceAvailable && (
-        <Animated.View
-          style={[
-            styles.micWrap,
-            multiline ? styles.micTop : styles.micCenter,
-            { transform: [{ scale: pulseAnim }] },
-          ]}
-        >
+      {/* Right-side button row: [clear] [mic] */}
+      <View style={[styles.btnRow, multiline ? styles.btnTop : styles.btnCenter]}>
+        {showClear && (
           <TouchableOpacity
-            style={[styles.micBtn, listening && styles.micBtnActive]}
-            onPress={handleMicPress}
+            style={styles.clearBtn}
+            onPress={() => onChangeText('')}
             activeOpacity={0.7}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <Text style={styles.micIcon}>{listening ? '⏹' : '🎙️'}</Text>
+            <Text style={styles.clearIcon}>✕</Text>
           </TouchableOpacity>
-        </Animated.View>
-      )}
+        )}
+
+        {voiceAvailable && (
+          <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+            <TouchableOpacity
+              style={[styles.micBtn, listening && styles.micBtnActive]}
+              onPress={handleMicPress}
+              activeOpacity={0.7}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Text style={styles.micIcon}>{listening ? '⏹' : '🎙️'}</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container:    { position: 'relative' },
+  container: { position: 'relative' },
   input: {
     borderWidth: 1.5,
     borderColor: COLORS.borderLight,
@@ -232,11 +246,23 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
     backgroundColor: COLORS.white,
   },
-  inputWithMic: { paddingRight: 52 },
-  multiline:    { paddingTop: SPACING.md },
-  micWrap:      { position: 'absolute', right: SPACING.sm },
-  micCenter:    { top: '50%', marginTop: -18 },
-  micTop:       { top: SPACING.sm },
+  multiline: { paddingTop: SPACING.md },
+  // Right-side button row
+  btnRow:    { position: 'absolute', right: SPACING.sm, flexDirection: 'row', alignItems: 'center', gap: SPACING.xs },
+  btnCenter: { top: '50%' as any, marginTop: -18 },
+  btnTop:    { top: SPACING.sm },
+  // Clear button
+  clearBtn: {
+    width: 36, height: 36,
+    borderRadius: 999,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1.5,
+    borderColor: COLORS.borderLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clearIcon: { fontSize: 13, color: COLORS.textSecondary, fontWeight: '600' as const },
+  // Mic button
   micBtn: {
     width: 36, height: 36,
     borderRadius: 999,

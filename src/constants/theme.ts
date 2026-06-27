@@ -146,3 +146,16 @@ export const CATEGORIES = [
   { id: 'sports', label: 'Sports', emoji: '🏅' },
   { id: 'other', label: 'Other', emoji: '✨' },
 ];
+
+export const CUSTOM_CATEGORY_COLORS = [
+  '#E91E63', '#9C27B0', '#3F51B5', '#0097A7',
+  '#388E3C', '#F57C00', '#5D4037', '#455A64',
+  '#C62828', '#1565C0',
+];
+
+export const EMOJI_PRESETS = [
+  '🎯', '🚀', '💡', '🎮', '🎵', '🍳',
+  '🏋️', '🧘', '🌿', '✈️', '🎭', '🧩',
+  '🤝', '💼', '🌟', '🎸', '📝', '🔭',
+  '🏄', '🧪', '🎤', '🖥️', '📷', '🎲',
+];

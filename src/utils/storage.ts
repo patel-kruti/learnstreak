@@ -1,12 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { AppSettings, Category, CategoryStat, DaySummary, EarnedBadge, LearningEntry, StreakData, StreakFreezeData } from '../types';
+import { AppSettings, Category, CategoryStat, CustomCategory, DaySummary, EarnedBadge, LearningEntry, StreakData, StreakFreezeData } from '../types';
 
 const KEYS = {
-  ENTRIES: 'learnstreak:entries',
-  STREAK:  'learnstreak:streak',
-  SETTINGS:'learnstreak:settings',
-  BADGES:  'learnstreak:badges',
-  FREEZES: 'learnstreak:freezes',
+  ENTRIES:           'learnstreak:entries',
+  STREAK:            'learnstreak:streak',
+  SETTINGS:          'learnstreak:settings',
+  BADGES:            'learnstreak:badges',
+  FREEZES:           'learnstreak:freezes',
+  CUSTOM_CATEGORIES: 'learnstreak:customCategories',
 };
 
 const MAX_FREEZES = 3;
@@ -343,6 +344,35 @@ export async function checkAndAwardBadges(streak: StreakData): Promise<string[]>
     }
   }
   return newlyEarned;
+}
+
+// ── Custom categories ─────────────────────────────────────────────────────────
+
+export async function getCustomCategories(): Promise<CustomCategory[]> {
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.CUSTOM_CATEGORIES);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+export async function saveCustomCategory(cat: CustomCategory): Promise<void> {
+  const cats = await getCustomCategories();
+  const idx = cats.findIndex((c) => c.id === cat.id);
+  if (idx >= 0) {
+    cats[idx] = cat;
+  } else {
+    cats.push(cat);
+  }
+  await AsyncStorage.setItem(KEYS.CUSTOM_CATEGORIES, JSON.stringify(cats));
+}
+
+export async function deleteCustomCategory(id: string): Promise<void> {
+  const cats = await getCustomCategories();
+  const filtered = cats.filter((c) => c.id !== id);
+  await AsyncStorage.setItem(KEYS.CUSTOM_CATEGORIES, JSON.stringify(filtered));
 }
 
 // ── Pending edit handoff ─────────────────────────────────────────────────────

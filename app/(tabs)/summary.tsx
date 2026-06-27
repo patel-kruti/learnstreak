@@ -10,10 +10,11 @@ import {
   View,
 } from 'react-native';
 import { CATEGORIES, COLORS, FONTS, RADIUS, SPACING } from '../../src/constants/theme';
-import { CategoryStat, DaySummary, StreakData } from '../../src/types';
+import { CategoryStat, CustomCategory, DaySummary, StreakData } from '../../src/types';
 import {
   formatMinutes,
   getCategoryStats,
+  getCustomCategories,
   getDaySummaries,
   getStreak,
   getTodayDate,
@@ -51,10 +52,11 @@ function getFromDate(key: RangeKey): string | undefined {
 
 export default function SummaryScreen() {
   const [range, setRange]             = useState<RangeKey>('1W');
-  const [daySummaries, setDaySummaries] = useState<DaySummary[]>([]);
-  const [catStats, setCatStats]       = useState<CategoryStat[]>([]);
-  const [streak, setStreak]           = useState<StreakData | null>(null);
-  const [loading, setLoading]         = useState(true);
+  const [daySummaries, setDaySummaries]   = useState<DaySummary[]>([]);
+  const [catStats, setCatStats]           = useState<CategoryStat[]>([]);
+  const [streak, setStreak]               = useState<StreakData | null>(null);
+  const [customCategories, setCustomCategories] = useState<CustomCategory[]>([]);
+  const [loading, setLoading]             = useState(true);
 
   useFocusEffect(
     useCallback(() => { loadData(range); }, [range])
@@ -64,14 +66,16 @@ export default function SummaryScreen() {
     setLoading(true);
     const from = getFromDate(r);
     const today = getTodayDate();
-    const [days, cats, s] = await Promise.all([
+    const [days, cats, s, customCats] = await Promise.all([
       getDaySummaries(from, today),
       getCategoryStats(from, today),
       getStreak(),
+      getCustomCategories(),
     ]);
     setDaySummaries(days);
     setCatStats(cats);
     setStreak(s);
+    setCustomCategories(customCats);
     setLoading(false);
   }
 
@@ -137,7 +141,7 @@ export default function SummaryScreen() {
                 <Text style={styles.sectionSubtitle}>by time spent</Text>
               </SectionTitle>
               {catStats.map((stat, idx) => (
-                <CategoryRow key={stat.category} stat={stat} rank={idx + 1} totalMinutes={totalMinutes} />
+                <CategoryRow key={stat.category} stat={stat} rank={idx + 1} totalMinutes={totalMinutes} customCategories={customCategories} />
               ))}
             </>
           )}
@@ -271,12 +275,15 @@ function CategoryRow({
   stat,
   rank,
   totalMinutes,
+  customCategories,
 }: {
   stat: CategoryStat;
   rank: number;
   totalMinutes: number;
+  customCategories: CustomCategory[];
 }) {
-  const catDef = CATEGORIES.find((c) => c.id === stat.category);
+  const catDef = CATEGORIES.find((c) => c.id === stat.category)
+    ?? customCategories.find((c) => c.id === stat.category);
   const pct    = totalMinutes > 0 ? (stat.totalMinutes / totalMinutes) * 100 : 0;
 
   return (

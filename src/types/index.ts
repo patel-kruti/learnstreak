@@ -1,13 +1,11 @@
-export type Category =
-  | 'coding'
-  | 'language'
-  | 'chess'
-  | 'reading'
-  | 'math'
-  | 'science'
-  | 'design'
-  | 'sports'
-  | 'other';
+export type Category = string;
+
+export interface CustomCategory {
+  id: string;
+  label: string;
+  emoji: string;
+  color: string;
+}
 
 // ── Core entry — ONE category, duration required ──────────────────────────────
 // Previously: one entry per day, categories was Category[], duration optional.
