@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import VoiceInput from '../../src/components/VoiceInput';
+import { ThirstyCrowWidget } from '../../widgets/ThirstyCrowWidget';
 import { CATEGORIES, COLORS, CUSTOM_CATEGORY_COLORS, EMOJI_PRESETS, FONTS, RADIUS, SPACING } from '../../src/constants/theme';
 import { Category, CustomCategory, LearningEntry } from '../../src/types';
 import { commitEntryToGitHub } from '../../src/utils/github';
@@ -429,6 +430,12 @@ export default function AddScreen() {
               <Text style={styles.totalLabel}>Total today</Text>
               <Text style={styles.totalValue}>{formatMinutes(totalTodayMinutes)}</Text>
             </View>
+
+            {/* ── Thirsty Crow Widget ───────────────────────────────────── */}
+            <ThirstyCrowWidget
+              sessions={todaySessions.map(e => ({ date: e.date, duration: e.duration }))}
+              goalMinutes={60}
+            />
           </>
         )}
 
