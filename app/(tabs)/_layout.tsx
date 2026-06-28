@@ -88,6 +88,13 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="friends"
+        options={{
+          title: 'Friends',
+          tabBarIcon: ({ focused }) => <TabIcon emoji="👥" focused={focused} />,
+        }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
@@ -95,9 +102,6 @@ export default function TabLayout() {
         }}
       />
 
-      {/* ── Hide template leftover screens ── */}
-      <Tabs.Screen name="explore" options={{ href: null }} />
-      <Tabs.Screen name="two"     options={{ href: null }} />
     </Tabs>
   );
 }

@@ -1,27 +1,38 @@
-import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { getSettings } from './storage';
 
-// Tell Expo how to handle notifications that arrive while the app is foregrounded
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+// expo-notifications' DevicePushTokenAutoRegistration.fx.js runs as a side-effect
+// the moment the package is require()'d. In Expo Go (SDK 53+) this throws an error
+// because remote push notifications were removed. Guard the require() so the module
+// never loads — and the side-effect never runs — in unsupported environments.
+const IS_WEB     = Platform.OS === 'web';
+const IS_EXPO_GO = Constants.appOwnership === 'expo';
+const SUPPORTED  = !IS_WEB && !IS_EXPO_GO;
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+type N = typeof import('expo-notifications');
+const Notifications: N | null = SUPPORTED ? require('expo-notifications') : null;
+
+if (Notifications) {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert:  true,
+      shouldPlaySound:  true,
+      shouldSetBadge:   true,
+      shouldShowBanner: true,
+      shouldShowList:   true,
+    }),
+  });
+}
 
 // ── Permission ────────────────────────────────────────────────────────────────
 
 export async function requestNotificationPermission(): Promise<'granted' | 'denied' | 'undetermined'> {
-  // Web — notifications work differently; skip silently
-  if (Platform.OS === 'web') return 'denied';
-
+  if (!Notifications) return 'denied';
   const { status: existing } = await Notifications.getPermissionsAsync();
   if (existing === 'granted') return 'granted';
-  if (existing === 'denied')  return 'denied'; // user already said no — can't re-prompt
+  if (existing === 'denied')  return 'denied';
   const { status } = await Notifications.requestPermissionsAsync();
   return status as 'granted' | 'denied' | 'undetermined';
 }
@@ -29,10 +40,8 @@ export async function requestNotificationPermission(): Promise<'granted' | 'deni
 // ── Schedule ──────────────────────────────────────────────────────────────────
 
 export async function scheduleDailyReminder(timeString: string): Promise<void> {
-  if (Platform.OS === 'web') return;
+  if (!Notifications) return;
 
-  // Always cancel first — avoids duplicate scheduled notifications
-  // which stack up every time the user saves settings
   await Notifications.cancelAllScheduledNotificationsAsync();
 
   const [hourStr, minStr] = timeString.split(':');
@@ -42,10 +51,6 @@ export async function scheduleDailyReminder(timeString: string): Promise<void> {
   const settings = await getSettings();
   const name     = settings.userName || 'Learner';
 
-  // ── Notification 1: Main daily reminder ──────────────────────────────────
-  // Fires every day at the user-chosen time.
-  // On Android, DAILY triggers require the exact alarm permission on API 31+.
-  // We use repeats:true with a seconds-based interval as a fallback-safe approach.
   await Notifications.scheduleNotificationAsync({
     identifier: 'daily-reminder',
     content: {
@@ -53,7 +58,6 @@ export async function scheduleDailyReminder(timeString: string): Promise<void> {
       body: "Don't break your streak — log today's learning ✨",
       sound: true,
       badge: 1,
-      // Android channel (must match what's declared in app.json)
       data: { screen: 'add' },
     },
     trigger: {
@@ -63,12 +67,6 @@ export async function scheduleDailyReminder(timeString: string): Promise<void> {
     },
   });
 
-  // ── Notification 2: Streak-at-risk alert ─────────────────────────────────
-  // Fires at 23:30 every night.
-  // The actual "has user logged today?" check happens at delivery time
-  // inside the notification handler — we can't conditionally skip scheduling
-  // from here, so we always schedule it and let the user ignore it if logged.
-  // A future improvement would use a background task to cancel it after logging.
   await Notifications.scheduleNotificationAsync({
     identifier: 'streak-alert',
     content: {
@@ -87,24 +85,21 @@ export async function scheduleDailyReminder(timeString: string): Promise<void> {
 }
 
 export async function cancelAllNotifications(): Promise<void> {
-  if (Platform.OS === 'web') return;
+  if (!Notifications) return;
   await Notifications.cancelAllScheduledNotificationsAsync();
 }
 
 // ── Verification ──────────────────────────────────────────────────────────────
-// Returns the list of currently scheduled notifications.
-// Used by the Settings screen to let the user verify scheduling worked.
 
-export async function getScheduledNotifications(): Promise<Notifications.NotificationRequest[]> {
-  if (Platform.OS === 'web') return [];
+export async function getScheduledNotifications(): Promise<unknown[]> {
+  if (!Notifications) return [];
   return Notifications.getAllScheduledNotificationsAsync();
 }
 
 // ── Milestone celebration ─────────────────────────────────────────────────────
-// Fires immediately when a streak milestone is hit (trigger: null = right now).
 
 export async function scheduleStreakCelebration(streak: number): Promise<void> {
-  if (Platform.OS === 'web') return;
+  if (!Notifications) return;
 
   const messages: Record<number, { title: string; body: string }> = {
     7:   { title: '🔥 7-day streak!',  body: "You're a Week Warrior! Keep going!" },
@@ -120,21 +115,22 @@ export async function scheduleStreakCelebration(streak: number): Promise<void> {
   await Notifications.scheduleNotificationAsync({
     identifier: `milestone-${streak}`,
     content: { title: msg.title, body: msg.body, sound: true, badge: 0 },
-    trigger: null, // fire immediately
+    trigger: null,
   });
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
-// Called from root _layout.tsx on app start.
-// Returns a status object so the Settings screen can show what happened.
 
 export type SetupResult =
   | { ok: true;  scheduled: number }
-  | { ok: false; reason: 'web' | 'disabled' | 'permission_denied' | 'permission_undetermined' | 'error'; message: string };
+  | { ok: false; reason: 'web' | 'expo_go' | 'disabled' | 'permission_denied' | 'permission_undetermined' | 'error'; message: string };
 
 export async function setupNotificationsFromSettings(): Promise<SetupResult> {
-  if (Platform.OS === 'web') {
+  if (IS_WEB) {
     return { ok: false, reason: 'web', message: 'Notifications are not supported in the browser.' };
+  }
+  if (IS_EXPO_GO) {
+    return { ok: false, reason: 'expo_go', message: 'Notifications require a development build, not Expo Go.' };
   }
 
   try {
@@ -165,7 +161,7 @@ export async function setupNotificationsFromSettings(): Promise<SetupResult> {
 
     await scheduleDailyReminder(settings.notificationTime);
     const scheduled = await getScheduledNotifications();
-    return { ok: true, scheduled: scheduled.length };
+    return { ok: true, scheduled: (scheduled as any[]).length };
 
   } catch (e: any) {
     return { ok: false, reason: 'error', message: e?.message ?? 'Unknown error.' };

@@ -1,5 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { auth } from './firebase';
+import { deleteEntryFromFirestore, syncEntryToFirestore, syncStreakToFirestore } from './firestore';
 import { AppSettings, Category, CategoryStat, CustomCategory, DaySummary, EarnedBadge, LearningEntry, StreakData, StreakFreezeData } from '../types';
+
+function currentUid(): string | null {
+  return auth.currentUser?.uid ?? null;
+}
 
 const KEYS = {
   ENTRIES:           'learnstreak:entries',
@@ -50,12 +56,16 @@ export async function saveEntry(entry: LearningEntry): Promise<void> {
     entries.push(entry);
   }
   await AsyncStorage.setItem(KEYS.ENTRIES, JSON.stringify(entries));
+  const uid = currentUid();
+  if (uid) syncEntryToFirestore(uid, entry).catch(() => {});
 }
 
 export async function deleteEntry(id: string): Promise<void> {
   const entries = await getAllEntries();
   const filtered = entries.filter((e) => e.id !== id);
   await AsyncStorage.setItem(KEYS.ENTRIES, JSON.stringify(filtered));
+  const uid = currentUid();
+  if (uid) deleteEntryFromFirestore(uid, id).catch(() => {});
 }
 
 // ── Derived aggregations (computed, never stored) ─────────────────────────────
@@ -232,6 +242,8 @@ export async function updateStreak(todayDate: string): Promise<StreakData> {
     AsyncStorage.setItem(KEYS.STREAK, JSON.stringify(newStreak)),
     saveFreezeData(freezeData),
   ]);
+  const uid = currentUid();
+  if (uid) syncStreakToFirestore(uid, newStreak).catch(() => {});
   return newStreak;
 }
 
@@ -247,6 +259,8 @@ export async function recalculateStreakAfterDeletion(): Promise<StreakData> {
   if (entryDates.length === 0) {
     const reset = DEFAULT_STREAK;
     await AsyncStorage.setItem(KEYS.STREAK, JSON.stringify(reset));
+    const uid = currentUid();
+    if (uid) syncStreakToFirestore(uid, reset).catch(() => {});
     return reset;
   }
 
@@ -284,6 +298,8 @@ export async function recalculateStreakAfterDeletion(): Promise<StreakData> {
   };
 
   await AsyncStorage.setItem(KEYS.STREAK, JSON.stringify(newStreak));
+  const uid = currentUid();
+  if (uid) syncStreakToFirestore(uid, newStreak).catch(() => {});
   return newStreak;
 }
 

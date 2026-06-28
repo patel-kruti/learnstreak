@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useAuth } from '../../src/context/AuthContext';
 import { COLORS, FONTS, RADIUS, SPACING } from '../../src/constants/theme';
 import { AppSettings } from '../../src/types';
 import { testGitHubConnection } from '../../src/utils/github';
@@ -25,6 +26,7 @@ import { DEFAULT_SETTINGS, getSettings, saveSettings } from '../../src/utils/sto
 type GitHubStatus = 'idle' | 'testing' | 'ok' | 'fail';
 
 export default function SettingsScreen() {
+  const { user, profile, logOut } = useAuth();
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [saving, setSaving] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus>('idle');
@@ -398,6 +400,31 @@ export default function SettingsScreen() {
           }
         >
           <Row label="View data on GitHub" value="→" valueColor={COLORS.accent} />
+        </TouchableOpacity>
+      </View>
+
+      {/* ── Account ─────────────────────────────────────────────── */}
+      <SectionHeader emoji="👤" title="Account" />
+      <View style={styles.card}>
+        {profile && (
+          <>
+            <Row label="Logged in as" value={profile.displayName} valueColor={COLORS.textSecondary} />
+            <Divider />
+            <Row label="Username" value={`@${profile.userName}`} valueColor={COLORS.textSecondary} />
+            <Divider />
+            <Row label="Email" value={profile.email} valueColor={COLORS.textTertiary} />
+            <Divider />
+          </>
+        )}
+        <TouchableOpacity
+          onPress={() =>
+            Alert.alert('Sign out?', 'You will be taken to the login screen.', [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Sign out', style: 'destructive', onPress: logOut },
+            ])
+          }
+        >
+          <Row label="Sign out" value="→" valueColor={COLORS.danger} />
         </TouchableOpacity>
       </View>
 
