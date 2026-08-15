@@ -1,220 +1,109 @@
-# LearnStreak 🔥
+# LearnStreak
+
 <img width="307" height="527" alt="image" src="https://github.com/user-attachments/assets/8594279f-0165-4268-b471-5cbb89c9acbf" /><img width="307" height="527" alt="image" src="https://github.com/user-attachments/assets/9f5929c6-3238-4934-aadd-8b0362e037e3" /> <img width="307" height="527" alt="image" src="https://github.com/user-attachments/assets/979f7fca-2724-48b6-a998-c344e11da58c" />
 
+A React Native / Expo app that turns learning into a daily habit through streak tracking, progress summaries, and achievement badges.
 
+## Quick Start (5 minutes)
 
-React Native / Expo project.
-
-## Project Overview
-
-LearnStreak is a React Native app built with Expo and Expo Router. It is configured for Android, iOS and web. The Expo package id is `com.nickruti.learnstreak1` (see `app.json`).
-
-## Why LearnStreak?
-
-LearnStreak helps you turn learning into a daily habit. It encourages consistency with visual streak tracking, progress summaries, and achievement badges so that small, regular effort turns into measurable progress. Key benefits:
-
-- Build routine: simple streak tracking and reminders keep you focused on the next small step.
-- Stay motivated: earn badges and view streak history to celebrate wins and maintain momentum.
-- Track progress: quick summaries and history views show how your learning compounds over time.
-- Lightweight & private: runs locally on your device, stores data locally, and offers a quick APK for users who want to try the app without installing from a store.
-- Cross-platform: built with Expo to run on Android, iOS, and web during development.
-
-Try the APK in this repo for a fast, hands-on demo (see the "Installing the APK" section below).
-
-## Table of contents
-
-- Installation
-- Development (run locally)
-- Building a production APK
-- Installing the APK on an Android device
-- Project structure
-- Contributing
-- License
-
-## Prerequisites
-
-- Node.js (LTS)
-- npm or yarn
-- Android Studio (for emulator) or an Android device with USB debugging enabled
-- (Optional) GitHub CLI `gh` and EAS CLI for building
-
-## Installation
-
-1. Clone the repository:
+**Prerequisites:** Node.js LTS and the [Expo Go](https://expo.dev/go) app on your phone.
 
 ```bash
 git clone <your-repo-url>
 cd learnstreak
-```
-
-2. Install dependencies:
-
-```bash
 npm install
-# or
-yarn install
-```
-
-## Development (run locally)
-
-- Start the Expo dev server:
-
-```bash
-npm run start
-# or
 npx expo start
 ```
 
-- Open on an Android device/emulator (requires Expo Go or a development client):
+Scan the QR code in your terminal with Expo Go (Android) or the Camera app (iOS). The app will open immediately — no build step required.
+
+> Firebase is already configured in `src/utils/firebase.ts`. No `.env` file or extra setup is needed.
+
+`npm install` also pulls in `react-native-executorch`, the native on-device LLM runtime used for AI-assisted category/summary suggestions while logging a session. It requires a dev-client build — in Expo Go the AI suggestion feature simply stays off and the rest of the app works normally.
+
+## AI suggestions, error reporting & analytics
+
+- **AI session suggestions** (`src/utils/llm.ts`) — as you type a session title, an on-device Qwen2.5-1.5B model (via `react-native-executorch`) suggests a category and one-line summary. Runs fully on-device; needs a dev-client/production build (not Expo Go) and the model binary, which is not checked into this repo — see `src/utils/llm.ts` for how it's loaded.
+- **Crash/error reporting** (`src/utils/sentry.ts`) — wired up via `@sentry/react-native` but ships with no DSN, so it's disabled by default (errors are logged locally, not sent anywhere). Add your DSN in `src/utils/sentry.ts` and fill in the `organization`/`project` in the Sentry Expo plugin config in `app.json` to enable it.
+- **Usage analytics** (`src/utils/analytics.ts`) — logs lightweight product events (sessions logged, streak milestones, AI suggestion accept/reject, etc.) to Firestore under `users/{uid}/events`. No-ops for anonymous users and never throws.
+- **Voice input** — logging a session can use speech-to-text, so the app now requests microphone/speech-recognition permissions (`NSMicrophoneUsageDescription`, `NSSpeechRecognitionUsageDescription`, `RECORD_AUDIO`) — see `app.json`.
+
+## Running on a simulator/emulator
 
 ```bash
+# Android emulator (requires Android Studio)
 npm run android
+
+# iOS simulator (macOS only, requires Xcode)
+npm run ios
+
+# Web browser
+npm run web
 ```
 
-Notes:
-- `npm run android` runs `expo start --android` which opens the Metro dev server and attempts to open the app in an emulator or on a connected device running Expo Go.
-- If you are using a custom development client, follow Expo’s dev client docs.
+## Building a production APK
 
-## Building a production APK (recommended: EAS Build)
-
-Expo’s classic build is deprecated for some workflows — we recommend EAS Build.
-
-1. Install EAS CLI:
+We use EAS Build (Expo's cloud build service).
 
 ```bash
 npm install -g eas-cli
-```
-
-2. Authenticate and configure:
-
-```bash
 eas login
-```
-
-3. Start a build for Android (APK):
-
-```bash
 eas build -p android --profile production
 ```
 
-4. After the build completes, download the APK from the build page or use `eas build:list` / `eas build:download` to fetch the artifact.
+Download the APK from the link printed at the end of the build, or run `eas build:list`.
 
-If you prefer to build locally (bare), open the Android project in Android Studio after running `expo prebuild`.
+To build locally instead, run `expo prebuild` then open the `android/` folder in Android Studio.
 
-## Installing the APK on an Android device
-
-Once you have an APK file (`app-release.apk` or similar), install it using ADB:
+## Installing an APK on Android
 
 ```bash
-# Install APK (first time)
-adb install path/to/your-app.apk
+# Via ADB
+adb install path/to/learnstreak.apk
 
-# Reinstall / replace existing app
-adb install -r path/to/your-app.apk
+# Reinstall over an existing install
+adb install -r path/to/learnstreak.apk
 ```
 
-If you don't use `adb`, you can also transfer the APK to the device and open it using a file manager (enable Install from Unknown Sources).
+Alternatively, transfer the APK to the device and open it with a file manager (enable **Install from Unknown Sources** in Settings first).
 
-### Downloadable APK (host and link)
+### APK in this repository
 
-You can provide the APK to users in one of the following ways. Replace `YOUR_USERNAME` and `v1.0.0` with your GitHub username and release tag.
-
-- GitHub Releases (recommended):
-
-	1. Create a release on GitHub and attach the APK (web UI or `gh`):
-
-```powershell
-gh release create v1.0.0 apk/learnstreak.apk --title "v1.0.0" --notes "Initial Android APK"
-```
-
-	2. Users download from:
+A pre-built APK is included in the `apk/` folder. Download it and install as above, or grab the raw URL:
 
 ```
-https://github.com/YOUR_USERNAME/learnstreak/releases/download/v1.0.0/learnstreak.apk
+https://github.com/patel-kruti/learnstreak/raw/main/apk/learnstreak.apk
 ```
 
-- Raw file in the repo (not ideal for large files):
-
-	1. Add the APK to the repo under an `apk/` folder and push:
-
-```bash
-mkdir -p apk
-# copy your APK into apk/learnstreak.apk
-git add apk/learnstreak.apk
-git commit -m "Add APK for direct download"
-git push origin main
-```
-
-	2. Users download the raw file:
-
-```
-https://github.com/YOUR_USERNAME/learnstreak/raw/main/apk/learnstreak.apk
-```
-
-### Direct APK included in this repository
-
-This repository includes the APK in the `apk/` folder as `learnstreak.apk`. Users can download and install it directly from the repository raw URL (replace `YOUR_USERNAME` with the repository owner):
-
-```
-https://github.com/YOUR_USERNAME/learnstreak/raw/main/apk/learnstreak.apk
-```
-
-Install after download with ADB:
-
-```bash
-adb install learnstreak.apk
-```
-
-This APK is tracked using Git LFS. If you clone the repository, ensure Git LFS is installed so the APK downloads correctly:
+This APK is tracked with Git LFS — run `git lfs install` before cloning if you need the binary:
 
 ```bash
 git lfs install
-git clone https://github.com/YOUR_USERNAME/learnstreak.git
+git clone https://github.com/patel-kruti/learnstreak.git
 ```
-
-### Security and checksum
-
-Provide a SHA256 checksum alongside the APK so users can verify integrity:
-
-```bash
-sha256sum apk/learnstreak.apk > apk/learnstreak.apk.sha256
-```
-
-Users can verify after download:
-
-```bash
-sha256sum -c learnstreak.apk.sha256
-```
-
-### Note about `rcan install`
-
-You previously mentioned `rcan install`. I don't recognize `rcan` as a standard Android install tool — if you mean `adb install`, the commands above are correct. If `rcan` is a custom utility or script you use, tell me how `rcan` is invoked (shell command or script) and I will add exact instructions for that method.
 
 ## Project structure
 
-- `app/` — Expo Router pages and layouts
-- `assets/` — images, fonts
-- `components/` — reusable components
-- `src/` — app source utilities and constants
-- `package.json` — scripts and dependencies
-- `app.json` — Expo configuration (package id, icons, splash)
+| Path | Purpose |
+|------|---------|
+| `app/` | Expo Router pages and layouts |
+| `src/utils/firebase.ts` | Firebase initialization |
+| `src/utils/firestore.ts` | Firestore helpers |
+| `src/utils/llm.ts` | On-device AI session suggestions |
+| `src/utils/sentry.ts` | Crash/error reporting |
+| `src/utils/analytics.ts` | Firestore event logging |
+| `src/context/AuthContext.tsx` | Auth state |
+| `components/` | Shared UI components |
+| `widgets/` | Home-screen widgets (`ThirstyCrowWidget`, `HareTortoiseWidget`) |
+| `assets/` | Images and fonts |
+| `app.json` | Expo config (bundle ID, icons, plugins) |
 
 ## Contributing
 
-- Fork the repository and open a pull request.
-- Run `npm install` and test changes locally with `npm run start`.
-- Add descriptive commit messages and update this README if you change setup or build steps.
+1. Fork the repo and create a branch.
+2. Run `npm install` and test with `npx expo start`.
+3. Open a pull request with a clear description of what changed and why.
 
 ## License
 
-Add a license file to this repository (e.g., `LICENSE` with MIT) or specify your preferred license here.
-
----
-
-If you want, I can:
-
-- add this `README.md` to the repo and commit it, or
-- create an `eas.json` with a recommended Android build profile, or
-- include precise `rcan` install instructions once you clarify what `rcan` refers to.
-
-Tell me which of these you'd like me to do next.
+MIT — add a `LICENSE` file if you want to make this explicit.

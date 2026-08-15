@@ -14,11 +14,14 @@ import {
   View,
 } from 'react-native';
 import VoiceInput from '../../src/components/VoiceInput';
-import { ThirstyCrowWidget } from '../../widgets/ThirstyCrowWidget';
+// import { ThirstyCrowWidget } from '../../widgets/ThirstyCrowWidget';
+import HareTortoiseWidget from '../../widgets/HareTortoiseWidget';
 import { CATEGORIES, COLORS, CUSTOM_CATEGORY_COLORS, EMOJI_PRESETS, FONTS, RADIUS, SPACING } from '../../src/constants/theme';
 import { Category, CustomCategory, LearningEntry } from '../../src/types';
 import { commitEntryToGitHub } from '../../src/utils/github';
 import { scheduleStreakCelebration } from '../../src/utils/notifications';
+import { suggestEnrichment, EnrichmentSuggestion } from '../../src/utils/llm';
+import { logEvent } from '../../src/utils/analytics';
 import {
   checkAndAwardBadges,
   clearPendingEdit,
@@ -66,6 +69,18 @@ export default function AddScreen() {
   // ── Session list ────────────────────────────────────────────────────────────
   const [todaySessions, setTodaySessions] = useState<LearningEntry[]>([]);
 
+  // ── AI enrichment suggestion ─────────────────────────────────────────────────
+  const [suggestion, setSuggestion]           = useState<EnrichmentSuggestion | null>(null);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
+  const [modelProgress, setModelProgress]     = useState(0);
+  const suggestionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track whether suggestion was shown for this session (to avoid re-showing after accept/reject)
+  const suggestionShownForTitle = useRef('');
+
+  // ── Streak celebration modal ─────────────────────────────────────────────────
+  const [showStreakModal, setShowStreakModal] = useState(false);
+  const [streakModalMsg, setStreakModalMsg]   = useState('');
+
   useFocusEffect(useCallback(() => {
     loadTodaySessions();
     getCustomCategories().then(setCustomCategories);
@@ -98,6 +113,54 @@ export default function AddScreen() {
     setDescription('');
     setDuration('');
     setEditingEntry(null);
+    setSuggestion(null);
+    setSuggestionLoading(false);
+    suggestionShownForTitle.current = '';
+    if (suggestionTimer.current) clearTimeout(suggestionTimer.current);
+  }
+
+  function handleTitleChange(text: string) {
+    setTitle(text);
+    setSuggestion(null);
+
+    if (suggestionTimer.current) clearTimeout(suggestionTimer.current);
+
+    // Don't trigger while editing an existing entry — the category is already set
+    if (editingEntry) return;
+    // Don't re-trigger for the same title that already produced a suggestion
+    if (text.trim() === suggestionShownForTitle.current) return;
+    if (text.trim().length < 6) return;
+
+    suggestionTimer.current = setTimeout(async () => {
+      setSuggestionLoading(true);
+      const result = await suggestEnrichment(
+        text,
+        description,
+        allCategories.map((c) => ({ id: c.id, label: c.label })),
+        setModelProgress
+      );
+      setSuggestionLoading(false);
+      if (!result) return;
+      suggestionShownForTitle.current = text.trim();
+      setSuggestion(result);
+      logEvent('ai_suggestion_shown', { category: result.category }).catch(() => {});
+    }, 1200);
+  }
+
+  function handleSuggestionAccept() {
+    if (!suggestion) return;
+    // Fill category if the user hasn't picked one yet
+    if (!selectedCategory) setSelectedCategory(suggestion.category as any);
+    // Fill description if it's empty
+    if (!description.trim()) setDescription(suggestion.summary);
+    logEvent('ai_suggestion_accepted', { category: suggestion.category }).catch(() => {});
+    setSuggestion(null);
+  }
+
+  function handleSuggestionReject() {
+    if (!suggestion) return;
+    logEvent('ai_suggestion_rejected', { category: suggestion.category }).catch(() => {});
+    setSuggestion(null);
   }
 
   // Load a session into the form for editing, then scroll to top
@@ -214,14 +277,15 @@ export default function AddScreen() {
 
         await saveEntry(entry);
 
+        let pendingStreakMsg: string | null = null;
+
         if (isFirstEntryToday) {
           const newStreak = await updateStreak(today);
           const newBadges = await checkAndAwardBadges(newStreak);
           if (newBadges.length > 0) await scheduleStreakCelebration(newStreak.currentStreak);
           const streakMsg = newStreak.currentStreak > 1
             ? `\n🔥 ${newStreak.currentStreak}-day streak!` : '\n🌱 Streak started!';
-          xAlert('🎉 Session logged!',
-            `Great work!${streakMsg}${newBadges.length > 0 ? '\n🏆 New badge earned!' : ''}`);
+          pendingStreakMsg = `Great work!${streakMsg}${newBadges.length > 0 ? '\n🏆 New badge earned!' : ''}`;
         } else {
           xAlert('✅ Session added', `+${duration}m of ${getCatDef(selectedCategory!)?.label ?? selectedCategory!} logged.`);
         }
@@ -229,6 +293,11 @@ export default function AddScreen() {
         commitEntryToGitHub(entry).catch(() => {});
         resetForm();
         await loadTodaySessions();
+
+        if (pendingStreakMsg) {
+          setStreakModalMsg(pendingStreakMsg);
+          setShowStreakModal(true);
+        }
       }
     } catch {
       xAlert('Error', 'Something went wrong. Please try again.');
@@ -335,10 +404,22 @@ export default function AddScreen() {
         <Text style={styles.label}>What did you learn? <Text style={styles.required}>*</Text></Text>
         <VoiceInput
           value={title}
-          onChangeText={setTitle}
+          onChangeText={handleTitleChange}
           placeholder="e.g. React Native navigation patterns"
           maxLength={100}
         />
+
+        {/* ── AI Suggestion card ───────────────────────────────────────────── */}
+        {(suggestionLoading || suggestion) && !editingEntry && (
+          <SuggestionCard
+            suggestion={suggestion}
+            loading={suggestionLoading}
+            modelProgress={modelProgress}
+            allCategories={allCategories}
+            onAccept={handleSuggestionAccept}
+            onReject={handleSuggestionReject}
+          />
+        )}
 
         {/* ── Notes ───────────────────────────────────────────────────────── */}
         <Text style={styles.label}>Notes <Text style={styles.optional}>(optional)</Text></Text>
@@ -431,16 +512,42 @@ export default function AddScreen() {
               <Text style={styles.totalValue}>{formatMinutes(totalTodayMinutes)}</Text>
             </View>
 
-            {/* ── Thirsty Crow Widget ───────────────────────────────────── */}
-            <ThirstyCrowWidget
-              sessions={todaySessions.map(e => ({ date: e.date, duration: e.duration }))}
-              goalMinutes={60}
+            {/* ── Hare & Tortoise Widget ───────────────────────────────── */}
+            <HareTortoiseWidget
+              dailyMinutes={[todaySessions.reduce((sum, s) => sum + s.duration, 0)]}
             />
           </>
         )}
 
         <View style={{ height: SPACING.xxl }} />
       </ScrollView>
+
+      {/* ── Streak Celebration Modal ─────────────────────────────────────── */}
+      <Modal
+        visible={showStreakModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowStreakModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.streakModalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowStreakModal(false)}
+        >
+          <TouchableOpacity activeOpacity={1} style={styles.streakModalBox} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>🎉 Session Logged!</Text>
+              <TouchableOpacity onPress={() => setShowStreakModal(false)}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.streakModalMsg}>{streakModalMsg}</Text>
+            <HareTortoiseWidget
+              dailyMinutes={[todaySessions.reduce((sum, s) => sum + s.duration, 0)]}
+            />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       {/* ── Add Category Modal ───────────────────────────────────────────── */}
       <Modal
@@ -574,6 +681,129 @@ function SessionCard({
   );
 }
 
+// ── AI Suggestion Card ────────────────────────────────────────────────────────
+
+function SuggestionCard({
+  suggestion,
+  loading,
+  modelProgress,
+  allCategories,
+  onAccept,
+  onReject,
+}: {
+  suggestion: EnrichmentSuggestion | null;
+  loading: boolean;
+  modelProgress: number;
+  allCategories: { id: string; label: string; emoji: string }[];
+  onAccept: () => void;
+  onReject: () => void;
+}) {
+  const catDef = suggestion
+    ? allCategories.find((c) => c.id === suggestion.category)
+    : null;
+
+  return (
+    <View style={suggestionStyles.card}>
+      <View style={suggestionStyles.header}>
+        <Text style={suggestionStyles.sparkle}>✨</Text>
+        <Text style={suggestionStyles.label}>AI suggestion</Text>
+      </View>
+
+      {loading && !suggestion ? (
+        <View style={suggestionStyles.loadingRow}>
+          <ActivityIndicator size="small" color={COLORS.accent} />
+          <Text style={suggestionStyles.loadingText}>
+            {modelProgress < 1 && modelProgress > 0
+              ? `Loading model ${Math.round(modelProgress * 100)}%…`
+              : 'Thinking…'}
+          </Text>
+        </View>
+      ) : suggestion ? (
+        <>
+          <Text style={suggestionStyles.body} numberOfLines={2}>
+            {catDef ? `${catDef.emoji} ${catDef.label}` : suggestion.category}
+            {'  ·  '}
+            {suggestion.summary}
+          </Text>
+          <View style={suggestionStyles.actions}>
+            <TouchableOpacity style={suggestionStyles.acceptBtn} onPress={onAccept} activeOpacity={0.8}>
+              <Text style={suggestionStyles.acceptText}>✓ Use this</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={suggestionStyles.rejectBtn} onPress={onReject} activeOpacity={0.8}>
+              <Text style={suggestionStyles.rejectText}>Dismiss</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      ) : null}
+    </View>
+  );
+}
+
+const suggestionStyles = StyleSheet.create({
+  card: {
+    marginTop: SPACING.sm,
+    borderWidth: 1.5,
+    borderColor: COLORS.accent,
+    borderRadius: RADIUS.md,
+    padding: SPACING.md,
+    backgroundColor: COLORS.accentLight,
+    gap: SPACING.xs,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  sparkle: { fontSize: 13 },
+  label: {
+    fontSize: FONTS.sizes.xs,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.accent,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  loadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    paddingVertical: 2,
+  },
+  loadingText: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.accent,
+  },
+  body: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textPrimary,
+    lineHeight: 20,
+  },
+  actions: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+    marginTop: 2,
+  },
+  acceptBtn: {
+    backgroundColor: COLORS.accent,
+    borderRadius: RADIUS.full,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 6,
+  },
+  acceptText: {
+    fontSize: FONTS.sizes.sm,
+    fontWeight: FONTS.weights.semibold,
+    color: COLORS.white,
+  },
+  rejectBtn: {
+    borderRadius: RADIUS.full,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 6,
+  },
+  rejectText: {
+    fontSize: FONTS.sizes.sm,
+    color: COLORS.textSecondary,
+  },
+});
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatDisplayDate(date: string): string {
@@ -634,6 +864,11 @@ const styles = StyleSheet.create({
   durationInputWithClear:  { paddingRight: 52 },
   durationClearBtn:        { position: 'absolute', right: SPACING.sm, top: '50%', marginTop: -18, width: 36, height: 36, borderRadius: 999, backgroundColor: COLORS.surface, borderWidth: 1.5, borderColor: COLORS.borderLight, alignItems: 'center', justifyContent: 'center' },
   durationClearIcon:       { fontSize: 13, color: COLORS.textSecondary, fontWeight: '600' as const },
+
+  // Streak celebration modal
+  streakModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', paddingHorizontal: SPACING.lg },
+  streakModalBox:     { backgroundColor: COLORS.white, borderRadius: RADIUS.xl, padding: SPACING.lg, maxHeight: '90%' },
+  streakModalMsg:     { fontSize: FONTS.sizes.md, color: COLORS.textSecondary, textAlign: 'center', marginBottom: SPACING.sm, lineHeight: 22 },
 
   // Add category modal
   modalOverlay:   { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },

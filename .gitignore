@@ -36,6 +36,12 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+# On-device LLM model binaries (large, downloaded/exported artifacts, not source)
+*.pte
+
+# Stray Python virtualenv (not part of this project)
+/learnstreak/
+
 # generated native folders
 /ios
 /android

@@ -20,6 +20,7 @@ export interface LearningEntry {
   description: string;
   duration: number;    // minutes — required, must be > 0
   createdAt: number;   // unix timestamp ms
+  updatedAt?: number;  // set on every save/edit; absent on entries created before this field was added
 }
 
 // ── Aggregated view of one day — derived, never stored ────────────────────────

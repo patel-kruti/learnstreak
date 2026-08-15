@@ -15,7 +15,11 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.yourname.learnstreak"
+      "bundleIdentifier": "com.yourname.learnstreak",
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "Allow LearnStreak to recognise your speech for voice input.",
+        "NSMicrophoneUsageDescription": "Allow LearnStreak to use the microphone for voice input."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -27,7 +31,8 @@
         "NOTIFICATIONS",
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
-        "RECORD_AUDIO"
+        "RECORD_AUDIO",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
@@ -37,6 +42,13 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "@sentry/react-native/expo",
+        {
+          "organization": "YOUR_SENTRY_ORG",
+          "project": "YOUR_SENTRY_PROJECT"
+        }
+      ],
       [
         "expo-notifications",
         {
@@ -53,10 +65,18 @@
           "microphonePermission": "Allow LearnStreak to use the microphone for voice input.",
           "speechRecognitionPermission": "Allow LearnStreak to recognise your speech for voice input."
         }
-      ]
+      ],
+      "@sentry/react-native",
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "242e27dd-64ed-4865-b556-a61f2c29e720"
+      }
     }
   }
 }

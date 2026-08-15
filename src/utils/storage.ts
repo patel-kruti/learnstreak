@@ -1,6 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth } from './firebase';
 import { deleteEntryFromFirestore, syncEntryToFirestore, syncStreakToFirestore } from './firestore';
+import { logEvent } from './analytics';
+import { captureError } from './sentry';
 import { AppSettings, Category, CategoryStat, CustomCategory, DaySummary, EarnedBadge, LearningEntry, StreakData, StreakFreezeData } from '../types';
 
 function currentUid(): string | null {
@@ -50,14 +52,16 @@ export async function hasEntryForDate(date: string): Promise<boolean> {
 export async function saveEntry(entry: LearningEntry): Promise<void> {
   const entries = await getAllEntries();
   const idx = entries.findIndex((e) => e.id === entry.id);
+  const stamped: LearningEntry = { ...entry, updatedAt: Date.now() };
   if (idx >= 0) {
-    entries[idx] = entry;
+    entries[idx] = stamped;
   } else {
-    entries.push(entry);
+    entries.push(stamped);
+    logEvent('session_logged', { category: entry.category, durationMinutes: entry.duration }).catch(() => {});
   }
   await AsyncStorage.setItem(KEYS.ENTRIES, JSON.stringify(entries));
   const uid = currentUid();
-  if (uid) syncEntryToFirestore(uid, entry).catch(() => {});
+  if (uid) syncEntryToFirestore(uid, stamped).catch((e) => captureError(e, { op: 'syncEntry', entryId: stamped.id }));
 }
 
 export async function deleteEntry(id: string): Promise<void> {
@@ -65,7 +69,7 @@ export async function deleteEntry(id: string): Promise<void> {
   const filtered = entries.filter((e) => e.id !== id);
   await AsyncStorage.setItem(KEYS.ENTRIES, JSON.stringify(filtered));
   const uid = currentUid();
-  if (uid) deleteEntryFromFirestore(uid, id).catch(() => {});
+  if (uid) deleteEntryFromFirestore(uid, id).catch((e) => captureError(e, { op: 'deleteEntry', entryId: id }));
 }
 
 // ── Derived aggregations (computed, never stored) ─────────────────────────────
@@ -205,6 +209,10 @@ export async function updateStreak(todayDate: string): Promise<StreakData> {
         if (!freezeData.frozenDates.includes(fd)) freezeData.frozenDates.push(fd);
       }
       freezeData.freezesAvailable -= missedDays;
+      logEvent('freeze_used', {
+        freezesConsumed: missedDays,
+        freezesRemaining: freezeData.freezesAvailable,
+      }).catch(() => {});
       newStreak = {
         currentStreak:  streak.currentStreak + 1,
         longestStreak:  Math.max(streak.longestStreak, streak.currentStreak + 1),
@@ -243,7 +251,7 @@ export async function updateStreak(todayDate: string): Promise<StreakData> {
     saveFreezeData(freezeData),
   ]);
   const uid = currentUid();
-  if (uid) syncStreakToFirestore(uid, newStreak).catch(() => {});
+  if (uid) syncStreakToFirestore(uid, newStreak).catch((e) => captureError(e, { op: 'syncStreak' }));
   return newStreak;
 }
 
@@ -357,6 +365,7 @@ export async function checkAndAwardBadges(streak: StreakData): Promise<string[]>
     if (!earnedIds.includes(badge.id) && streak.currentStreak >= badge.requiredDays) {
       await awardBadge(badge.id, streak.currentStreak);
       newlyEarned.push(badge.id);
+      logEvent('streak_milestone', { badgeId: badge.id, streakDay: streak.currentStreak }).catch(() => {});
     }
   }
   return newlyEarned;
